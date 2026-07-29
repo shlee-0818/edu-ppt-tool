@@ -70,6 +70,10 @@ window.__XLSX__="LyogeGxzeC1qcy1zdHlsZSAxLjIuMC1iZXRhIEAgMjAyMi0wNC0wNVQwMTo0MDo
   .pvframe{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:#fff}
   #pvstage{position:absolute;top:0;left:0;width:1920px;height:1080px;transform-origin:0 0;font-family:"맑은 고딕","Malgun Gothic",sans-serif}
   .pvempty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:13px;text-align:center;padding:20px;line-height:1.7}
+  .pvf{outline:none;border-radius:3px;cursor:text}
+  .pvf:hover{box-shadow:0 0 0 2px rgba(200,16,46,.18)}
+  .pvf:focus{box-shadow:0 0 0 2px rgba(200,16,46,.55);background:rgba(200,16,46,.05)}
+  .pvph{color:#c9c9c9}
   .card.sel{border-color:var(--red);box-shadow:0 0 0 3px rgba(200,16,46,.12)}
   .card.sel .ch{background:#fff5f6}
   .card{cursor:pointer}
@@ -149,7 +153,7 @@ window.__XLSX__="LyogeGxzeC1qcy1zdHlsZSAxLjIuMC1iZXRhIEAgMjAyMi0wNC0wNVQwMTo0MDo
     <div class="pvpanel">
       <div class="pvh"><b id="pvtitle">미리보기</b>
         <span class="pvnav"><button class="iconbtn" id="pvPrevBtn" title="이전 장" onclick="pvPrev()">◀</button><button class="iconbtn" id="pvNextBtn" title="다음 장" onclick="pvNext()">▶</button></span>
-        <span class="pvhint">보면서 바로 수정 · ◀▶ 장 넘기기</span></div>
+        <span class="pvhint">글자를 클릭해 여기서 바로 수정 · ◀▶ 장 넘기기</span></div>
       <div class="pvframe"><div id="pvstage"></div><div id="pvempty" class="pvempty">왼쪽 <b style="color:var(--red)">① 파일 업로드</b> 또는 <b style="color:var(--red)">② 직접 작성</b>으로 시작하세요.<br>카드를 클릭하면 여기에서 미리보고 바로 수정할 수 있습니다.</div></div>
     </div>
   </aside>
@@ -158,6 +162,7 @@ window.__XLSX__="LyogeGxzeC1qcy1zdHlsZSAxLjIuMC1iZXRhIEAgMjAyMi0wNC0wNVQwMTo0MDo
   <span class="cnt" id="cnt">슬라이드 0장</span><span class="sp"></span>
   <button class="btn ghost" onclick="clearDeck()">비우기</button>
   <button class="btn" id="genbtn" onclick="genPPT()" disabled>⬇ 교안 PPT 다운로드</button>
+  <a class="btn ghost" id="saveLink" style="display:none;text-decoration:none"></a>
 </div>
 <input id="imgIn" type="file" accept="image/*" hidden>
 <div class="toast" id="toast"></div>
@@ -414,8 +419,27 @@ function secNoAt(k){ let n=0; for(let i=0;i<=k;i++){ const c=CAT[DECK[i].src]; i
 function previewHTML(src, values, secNo){
   let html=(SLIDES[src]||'<div style="padding:80px;font-size:40px;color:#bbb">미리보기 없음</div>').replace(/\.\.\/assets\/foundation-symbol\.png/g, SYMBOL_PNG);
   if(secNo) html=html.replace(/>(\s*\d{1,2}\s*\.\s*)</, '>'+String(secNo).padStart(2,'0')+'.<');
-  (CAT[src]&&CAT[src].fields||[]).forEach(f=>{ const v=values[f.i]; if(v&&String(v).trim()){ const idx=html.indexOf(f.ph); if(idx>=0) html=html.slice(0,idx)+xescH(v)+html.slice(idx+f.ph.length); } });
+  // 입력칸을 그 자리에서 고칠 수 있게 감싼다(빈 칸은 회색 안내문 상태로 두고, 클릭하면 지워짐)
+  (CAT[src]&&CAT[src].fields||[]).forEach(f=>{
+    const idx=html.indexOf(f.ph); if(idx<0) return;
+    const v=values[f.i], has=!!(v&&String(v).trim());
+    const shown=has? xescH(v).replace(/\r?\n/g,'<br>') : xescH(f.ph);
+    html=html.slice(0,idx)+'<span class="pvf'+(has?'':' pvph')+'" data-fi="'+f.i+'" contenteditable="true" spellcheck="false">'+shown+'</span>'+html.slice(idx+f.ph.length);
+  });
   return html;
+}
+function syncCardField(k,fi){ const card=document.querySelectorAll('#deck .card')[k]; if(!card)return;
+  const el=card.querySelector('[data-fi="'+fi+'"]'); if(el) el.value=(DECK[k].values[fi]!=null?DECK[k].values[fi]:''); }
+// 미리보기에서 직접 고친 내용을 덱에 반영
+function bindPreviewEdit(){
+  document.querySelectorAll('#pvstage .pvf').forEach(el=>{
+    el.addEventListener('focus',()=>{ if(el.classList.contains('pvph')){ el.textContent=''; el.classList.remove('pvph'); } });
+    el.addEventListener('input',()=>{ const inst=DECK[SEL]; if(!inst)return; const fi=+el.dataset.fi;
+      inst.values[fi]=el.innerText.replace(/ /g,' ').replace(/\n{3,}/g,'\n\n').trim(); syncCardField(SEL,fi); });
+    el.addEventListener('blur',()=>{ const inst=DECK[SEL]; if(!inst)return;
+      if(!String(inst.values[+el.dataset.fi]||'').trim()){ renderPreview(); } else renderDeck(); });
+    el.addEventListener('keydown',e=>{ if(e.key==='Escape') el.blur(); });
+  });
 }
 function scalePV(){ const stage=document.getElementById('pvstage'); const box=stage.parentElement; const w=box.clientWidth||600; stage.style.transform='scale('+(w/1920)+')'; }
 function renderPreview(){
@@ -438,6 +462,7 @@ function renderPreview(){
     ims.forEach((im,i)=>{ const c=cells[i]; if(!c) return;
       cont.insertAdjacentHTML('beforeend',`<img src="${im.data}" style="position:absolute;left:${c[0]}px;top:${c[1]}px;width:${c[2]}px;height:${c[3]}px;object-fit:contain;z-index:60">`); });
   }
+  bindPreviewEdit();
   scalePV();
   title.textContent=(SEL+1)+'. '+CAT[inst.src].label;
 }
@@ -492,27 +517,133 @@ function relImageMap(relsXml, base){
 }
 function imgDim(dataUri){ return new Promise((res,rej)=>{ const i=new Image();
   i.onload=()=>res({w:i.naturalWidth,h:i.naturalHeight}); i.onerror=()=>rej(new Error('bad image')); i.src=dataUri; }); }
+async function oneImage(zip, path){
+  if(!path) return null; const f=zip.file(path); if(!f) return null;
+  const ext=(path.split('.').pop()||'').toLowerCase();
+  try{
+    if(/^(png|jpe?g|gif)$/.test(ext)){
+      // 원본 바이트를 그대로 씀 — 캔버스로 다시 그리면 사진이 PNG로 부풀어 파일이 몇 배가 됨
+      const mime=ext==='png'?'image/png':(ext==='gif'?'image/gif':'image/jpeg');
+      const data='data:'+mime+';base64,'+(await f.async('base64'));
+      const d=await imgDim(data);
+      if(d.w<90||d.h<90) return null;                                            // 90px 미만 = 로고·아이콘류
+      return {data, w:d.w, h:d.h, ext:(ext==='jpg'?'jpeg':ext)};
+    }
+    const im=await processImage(await f.async('blob'));                           // 그 외 형식은 PNG로 변환
+    return (im.w>=90&&im.h>=90)? im : null;
+  }catch(_){ return null; }                          // EMF/WMF 등 브라우저가 못 읽는 형식은 건너뜀
+}
 async function grabImages(zip, ids, map, max){
   const out=[], seen={};
-  for(const id of ids){
-    if(out.length>=(max||6)) break;
-    const path=map[id]; if(!path||seen[id]) continue; seen[id]=1;
-    const f=zip.file(path); if(!f) continue;
-    const ext=(path.split('.').pop()||'').toLowerCase();
-    try{
-      if(/^(png|jpe?g|gif)$/.test(ext)){
-        // 원본 바이트를 그대로 씀 — 캔버스로 다시 그리면 사진이 PNG로 부풀어 파일이 몇 배가 됨
-        const mime=ext==='png'?'image/png':(ext==='gif'?'image/gif':'image/jpeg');
-        const data='data:'+mime+';base64,'+(await f.async('base64'));
-        const d=await imgDim(data);
-        if(d.w>=90 && d.h>=90) out.push({data, w:d.w, h:d.h, ext:(ext==='jpg'?'jpeg':ext)});   // 90px 미만 = 로고·아이콘류
-      } else {
-        const im=await processImage(await f.async('blob'));                                     // 그 외 형식은 PNG로 변환
-        if(im.w>=90 && im.h>=90) out.push(im);
-      }
-    }catch(_){}                                      // EMF/WMF 등 브라우저가 못 읽는 형식은 조용히 건너뜀
-  }
+  for(const id of ids){ if(out.length>=(max||6)) break;
+    if(seen[id]) continue; seen[id]=1;
+    const im=await oneImage(zip, map[id]); if(im) out.push(im); }
   return out;
+}
+
+/* ===== 사진 위에 그려둔 표시(타원·화살표·말풍선·가림상자)를 사진에 합성 =====
+   원본은 사진 위에 도형으로 "여기를 보세요"를 표시한다. 사진만 떼오면 그 표시가 사라져
+   무엇을 보라는 자료인지 알 수 없게 되므로, 사진에 얹혀 있던 도형을 사진 안에 그려 넣는다. */
+function boxOf(frag){ // 속성 순서·공백이 파일마다 달라 느슨하게 잡는다
+  const o=frag.match(/<a:off[^>]*?x="(-?\d+)"[^>]*?y="(-?\d+)"[^>]*?\/>/);
+  const e=frag.match(/<a:ext[^>]*?cx="(\d+)"[^>]*?cy="(\d+)"[^>]*?\/>/);
+  if(!o||!e) return null; return {x:+o[1], y:+o[2], w:+e[1], h:+e[2]}; }
+function spPrOf(frag){ return (frag.match(/<p:spPr>[\s\S]*?<\/p:spPr>/)||[''])[0]; }
+function lineOf(spPr){ const seg=(spPr.match(/<a:ln[\s\S]*?<\/a:ln>|<a:ln[^>]*\/>/)||[''])[0];
+  const c=seg.match(/<a:srgbClr val="([0-9A-Fa-f]{6})"/), w=seg.match(/w="(\d+)"/);
+  return {color:c?('#'+c[1]):null, w:w?+w[1]:0}; }
+function fillOf(spPr){ const m=spPr.match(/<a:solidFill><a:srgbClr val="([0-9A-Fa-f]{6})"/); return m?('#'+m[1]):null; }
+function textOf(frag){ return (frag.match(/<a:t>[\s\S]*?<\/a:t>/g)||[]).map(s=>s.replace(/<\/?a:t>/g,'')).join(' ').replace(/\s+/g,' ').trim(); }
+function pptxPictures(xml){ const out=[];
+  (xml.match(/<p:pic>[\s\S]*?<\/p:pic>/g)||[]).forEach(frag=>{
+    const id=(frag.match(/<a:blip[^>]*r:embed="([^"]+)"/)||[])[1]; if(!id) return;
+    const b=boxOf(spPrOf(frag))||{x:0,y:0,w:0,h:0};   // 좌표를 못 읽어도 사진 자체는 살린다(표시 합성만 생략)
+    b.id=id; out.push(b); });
+  return out; }
+function pptxAnnots(xml){ const out=[];
+  (xml.match(/<p:sp>[\s\S]*?<\/p:sp>|<p:cxnSp>[\s\S]*?<\/p:cxnSp>/g)||[]).forEach(frag=>{
+    const spPr=spPrOf(frag); const b=boxOf(spPr); if(!b||!b.w||!b.h) return;
+    b.prst=(spPr.match(/prst="(\w+)"/)||[])[1]||'custom';
+    b.line=lineOf(spPr); b.fill=fillOf(spPr); b.text=textOf(frag);
+    b.flipH=/flipH="1"/.test(spPr); b.flipV=/flipV="1"/.test(spPr);
+    b.arrow=/<a:(tail|head)End[^>]*type="(triangle|arrow|stealth|oval)"/.test(spPr);
+    b.isConn=frag.indexOf('<p:cxnSp>')===0;
+    out.push(b); });
+  return out; }
+function annotsFor(pic, annots){
+  const parea=Math.max(1,pic.w*pic.h);
+  return annots.filter(a=>{
+    const ix=Math.min(pic.x+pic.w,a.x+a.w)-Math.max(pic.x,a.x);
+    const iy=Math.min(pic.y+pic.h,a.y+a.h)-Math.max(pic.y,a.y);
+    if(ix<=0||iy<=0) return false;
+    const aarea=Math.max(1,a.w*a.h);
+    if(aarea>parea*1.6) return false;                 // 배경판·큰 표 같은 건 제외
+    if(ix*iy < aarea*0.55) return false;              // 사진 위에 실제로 얹힌 것만
+    return !!(a.line.color || a.fill || a.text);
+  });
+}
+/* 표시를 되살릴 때 원본의 색·두께를 그대로 베끼지 않는다 — 자료마다 제각각이라 통합 교안이 지저분해짐.
+   위치와 종류(타원/화살표/말풍선/가림)만 가져오고, 스타일은 마스터 톤(레드 C8102E·맑은 고딕)으로 표준화.
+   어떤 사진 위에서도 보이도록 빨간 선 아래에 흰 헤일로를 한 겹 깐다. */
+const ANN={red:'#C8102E', ink:'#111111', halo:'rgba(255,255,255,.9)'};
+function isLight(hex){ if(!hex) return false; const n=parseInt(hex.slice(1),16);
+  return (((n>>16&255)*0.299+(n>>8&255)*0.587+(n&255)*0.114)/255) > 0.82; }
+function pathRound(g,x,y,w,h,r){ r=Math.max(0,Math.min(r,Math.abs(w)/2,Math.abs(h)/2));
+  g.beginPath(); g.moveTo(x+r,y); g.lineTo(x+w-r,y); g.quadraticCurveTo(x+w,y,x+w,y+r);
+  g.lineTo(x+w,y+h-r); g.quadraticCurveTo(x+w,y+h,x+w-r,y+h); g.lineTo(x+r,y+h);
+  g.quadraticCurveTo(x,y+h,x,y+h-r); g.lineTo(x,y+r); g.quadraticCurveTo(x,y,x+r,y); g.closePath(); }
+function strokeTwice(g, drawPath, lw){                       // 흰 헤일로 → 레드 (어두운 사진에서도 보이게)
+  g.lineCap='round'; g.lineJoin='round';
+  g.strokeStyle=ANN.halo; g.lineWidth=lw*2.4; drawPath(); g.stroke();
+  g.strokeStyle=ANN.red;  g.lineWidth=lw;     drawPath(); g.stroke();
+}
+async function compositeAnnots(im, pic, annots){
+  const A=annotsFor(pic, annots); if(!A.length) return im;
+  const base=new Image(); base.src=im.data;
+  await new Promise((res,rej)=>{ base.onload=res; base.onerror=rej; });
+  const cv=document.createElement('canvas'); cv.width=im.w; cv.height=im.h; const g=cv.getContext('2d');
+  g.drawImage(base,0,0,im.w,im.h);
+  const sx=im.w/pic.w, sy=im.h/pic.h;
+  const LW=Math.max(2.5, Math.min(im.w,im.h)*0.009);          // 원본 두께와 무관하게 통일
+  const parea=Math.max(1,pic.w*pic.h);
+  A.forEach(a=>{
+    const x=(a.x-pic.x)*sx, y=(a.y-pic.y)*sy, w=a.w*sx, h=a.h*sy;
+    const masking = a.fill && isLight(a.fill) && !a.text;      // 원본에서 무언가를 가린 상자 → 가림 유지
+    if(masking){ g.fillStyle='#FFFFFF'; g.fillRect(x,y,w,h); return; }
+
+    if(a.isConn || /^(line|straightConnector|bentConnector|curvedConnector)/.test(a.prst)){
+      let x1=x,y1=y,x2=x+w,y2=y+h;
+      if(a.flipH){ x1=x+w; x2=x; } if(a.flipV){ y1=y+h; y2=y; }
+      strokeTwice(g, ()=>{ g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); }, LW);
+      const ang=Math.atan2(y2-y1,x2-x1), s=Math.max(11, LW*3.6);   // 화살표 머리는 항상 통일된 삼각형
+      const head=()=>{ g.beginPath(); g.moveTo(x2,y2);
+        g.lineTo(x2-s*Math.cos(ang-0.40), y2-s*Math.sin(ang-0.40));
+        g.lineTo(x2-s*Math.cos(ang+0.40), y2-s*Math.sin(ang+0.40)); g.closePath(); };
+      head(); g.fillStyle=ANN.halo; g.strokeStyle=ANN.halo; g.lineWidth=LW*2.2; g.stroke();
+      head(); g.fillStyle=ANN.red; g.fill();
+      return;
+    }
+    if(a.text){                                                // 말풍선·라벨 → 흰 카드 + 레드 테두리
+      const fs=Math.max(13, Math.min(h*0.5, im.w*0.035));
+      g.font='700 '+fs+'px "맑은 고딕","Malgun Gothic",sans-serif'; g.textBaseline='middle';
+      const txt=a.text.length>26? a.text.slice(0,25)+'…' : a.text;
+      const tw=g.measureText(txt).width, pad=fs*0.55;
+      const bw=Math.max(w, tw+pad*2), bh=Math.max(h, fs+pad*1.4);
+      g.save(); g.shadowColor='rgba(0,0,0,.20)'; g.shadowBlur=LW*3; g.shadowOffsetY=LW*0.8;
+      pathRound(g,x,y,bw,bh,bh*0.28); g.fillStyle='rgba(255,255,255,.96)'; g.fill(); g.restore();
+      pathRound(g,x,y,bw,bh,bh*0.28); g.strokeStyle=ANN.red; g.lineWidth=LW*0.9; g.stroke();
+      g.fillStyle=ANN.ink; g.fillText(txt, x+pad, y+bh/2);
+      return;
+    }
+    if(a.prst==='ellipse'){
+      strokeTwice(g, ()=>{ g.beginPath(); g.ellipse(x+w/2,y+h/2,Math.abs(w/2),Math.abs(h/2),0,0,Math.PI*2); }, LW);
+      return;
+    }
+    if(a.fill && a.w*a.h < parea*0.06){                        // 작은 색 도형 = 지시 마커 → 레드 점으로 통일
+      pathRound(g,x,y,w,h,Math.min(w,h)*0.3); g.fillStyle=ANN.red; g.fill(); return; }
+    strokeTwice(g, ()=>pathRound(g,x,y,w,h,Math.min(Math.abs(w),Math.abs(h))*0.10), LW);
+  });
+  return {data:cv.toDataURL('image/png'), w:im.w, h:im.h, ext:'png'};
 }
 function isJustNum(s){ return /^\s*\d{1,3}\s*$/.test(String(s)); }
 // 슬라이드 1장 → {제목, 불릿, 이미지들}. 제목은 ①제목 자리표시 ②가장 큰 글자 ③첫 줄 순서로 판정
@@ -541,8 +672,15 @@ async function pptxSlideItem(zip, n, num){
   const bullets=body.filter(p=>{ if(!used && p.t===title){ used=true; return false; } return true; }).map(p=>p.t);
   const rf=zip.file('ppt/slides/_rels/slide'+num+'.xml.rels');
   const map=rf?relImageMap(await rf.async('string'),'ppt/'):{};
-  const ids=[...xml.matchAll(/<a:blip[^>]*r:embed="([^"]+)"/g)].map(m=>m[1]);
-  const images=await grabImages(zip, ids, map, 6);
+  // 사진마다 위치를 알아야 그 위에 얹힌 표시 도형을 찾아 합성할 수 있다
+  const pics=pptxPictures(xml), annots=pptxAnnots(xml), images=[], seen={};
+  for(const p of pics){
+    if(images.length>=6) break;
+    const key=p.id+'@'+p.x+','+p.y; if(seen[key]) continue; seen[key]=1;
+    const base=await oneImage(zip, map[p.id]); if(!base) continue;
+    let fin=base; if(p.w&&p.h){ try{ fin=await compositeAnnots(base, p, annots); }catch(_){} }
+    images.push(fin);
+  }
   return {title, bullets, image:images.length>0, images};
 }
 async function parsePptxItems(ab){ const zip=await JSZip.loadAsync(ab);
@@ -597,16 +735,29 @@ function fillOrds(src, arr){ const m={}, n=CAT[src].fields.length; arr.slice(0,n
 function imgTemplate(n){ return 9; }
 function zoneCount(src){ return (ZONES[src]||[]).length; }
 function attachImages(inst, ims){ (ims||[]).slice(0,6).forEach((im,i)=>{ inst.images[i]=im; }); return inst; }
+/* 규칙 기반(AI 꺼짐)에서의 문장 정리 — 한 줄로 죽 이어 붙이면 발표자료로 못 씀.
+   줄 단위로 남기고(PPT에서도 줄바꿈으로 들어감) 작성자 메모·번호 같은 잡음을 걷어냄.
+   ※ 문장을 발표용으로 다듬는 것은 AI 몫이고, 여기서는 '읽을 수 있게 나누는' 수준까지만 한다. */
+function tidyLines(arr, max){
+  const out=[];
+  (arr||[]).forEach(s=>{ let t=String(s).replace(/\s+/g,' ').trim();
+    if(!t || t.length<2) return;
+    if(/^\d{1,2}\s*\/\s*\d{1,2}\b/.test(t)) return;      // "8/30 1234567" 같은 작성 메모
+    if(/^[\d\s\-.]{5,}$/.test(t)) return;                 // 번호만 있는 줄
+    if(out.indexOf(t)>=0) return;                         // 중복
+    out.push(t.length>75? t.slice(0,73)+'…' : t);
+  });
+  return out.slice(0, max||5);
+}
 // 한 항목(제목+불릿) → 성격에 맞는 템플릿 선택
-function mapItem(it){ const t=it.title||'', b=(it.bullets||[]).filter(Boolean); const ims=(it.images||[]);
+function mapItem(it){ const t=it.title||'', b=tidyLines(it.bullets,8); const ims=(it.images||[]);
   if(ims.length){ const src=imgTemplate(ims.length);
-    // 9번은 입력칸이 [핵심문장, 상세설명] 2개 — 불릿을 한 칸에 모아 넣어 원본 설명이 사라지지 않게
-    return attachImages({src, values:fillOrds(src,[t, b.join(' · ')]), images:{}}, ims); }
-  if(it.image) return {src:9, values:byField(9,{0:t,1:b[0]||'',2:b.slice(1).join(' ')})};
+    // 9번 입력칸은 [핵심문장, 상세설명] — 첫 줄을 핵심으로, 나머지는 줄바꿈으로 나눠 설명 칸에
+    return attachImages({src, values:fillOrds(src,[b[0]||t, tidyLines(b.slice(1),5).join('\n')]), images:{}}, ims); }
   if(!b.length) return {src:5, values:byField(5,{0:t})};                                   // 제목만 → 챕터
-  if(b.length<=2) return {src:8, values:byField(8,{0:t,1:b[0]||'',2:b.slice(1).join(' ')})}; // 1~2줄 → 본문 요약
+  if(b.length<=2) return {src:8, values:byField(8,{0:t,1:b[0]||'',2:b.slice(1).join('\n')})}; // 1~2줄 → 본문 요약
   if(b.length<=4) return {src:10, values:byField(10,{0:t,1:b[0]||'',3:b[1]||'',5:b[2]||'',7:b[3]||''})}; // 3~4개 → 4카드
-  return {src:8, values:byField(8,{0:t,3:b[0]||'',4:b[1]||'',5:b[2]||'',6:b[3]||'',2:b.slice(4).join(' · ')})}; // 5개+ → 요약(항목4+나머지 설명)
+  return {src:8, values:byField(8,{0:t,3:b[0]||'',4:b[1]||'',5:b[2]||'',6:b[3]||'',2:b.slice(4).join('\n')})}; // 5개+ → 요약
 }
 // 업로드 내용 → 표지·목차 포함한 실제 교안 구성
 function buildDeck(items, fileName){
@@ -656,7 +807,15 @@ function aiInit(){
   const on=document.getElementById('aiOn'), cfg=document.getElementById('aiCfg');
   on.checked=localStorage.getItem(AIO)==='1'; cfg.style.display=on.checked?'flex':'none';
   on.onchange=()=>{ localStorage.setItem(AIO,on.checked?'1':'0'); cfg.style.display=on.checked?'flex':'none'; };
-  if(AI_PROXY_URL){ cfg.innerHTML='<div class="aihint" style="color:#0a7;background:#eefaf4">✅ AI 연결됨 — 설정 없이 바로 사용됩니다. (문서 내용은 변환 시에만 전송 · 개인정보 금지)</div>'; return; }
+  if(AI_PROXY_URL){ cfg.innerHTML='<div class="aihint" style="color:#0a7;background:#eefaf4">✅ AI 연결됨 — 설정 없이 바로 사용됩니다. (문서 내용은 변환 시에만 전송 · 개인정보 금지)<br>무료 한도가 <b>분당 요청 20건</b>이라 여러 명이 동시에 변환하면 잠시 대기할 수 있습니다(자동으로 기다렸다 재시도).</div>'; return; }
+  if(location.protocol==='file:'){
+    // 파일을 직접 열면 중계서버가 출처를 막아 AI가 안 돌고, 규칙 기반(문장 그대로 붙이기)으로 떨어진다.
+    const b=document.createElement('div'); b.className='aihint';
+    b.style.cssText='color:#8a1220;background:#fdecef;margin-bottom:7px';
+    b.innerHTML='⚠ <b>이 파일을 직접 열면 AI 매칭이 동작하지 않습니다.</b> 문장을 발표용으로 다듬고 알맞은 템플릿을 고르는 건 AI 몫이라, 이대로는 원본 문장이 그대로 들어갑니다.<br>'
+      +'→ <a href="https://shlee-0818.github.io/edu-ppt-tool/" target="_blank"><b>shlee-0818.github.io/edu-ppt-tool</b></a> 로 열면 설정 없이 바로 됩니다. (이 파일에서 계속 쓰려면 아래에 개인 무료 키 입력)';
+    cfg.insertBefore(b, cfg.firstChild);
+  }
   const k=document.getElementById('aiKey'), m=document.getElementById('aiModel'), sel=document.getElementById('aiProvider');
   aiLoadProv();
   sel.onchange=()=>{ localStorage.setItem(AIP,sel.value); aiLoadProv(); };
@@ -668,7 +827,18 @@ async function aiRaw(sys,user){
   if(AI_PROXY_URL){
     const res=await fetch(AI_PROXY_URL,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({system:sys,user})});
     if(!res.ok) throw new Error('연결 서버 오류 '+res.status+' '+(await res.text()).slice(0,200));
-    const d=await res.json(); return d.text||'';
+    const d=await res.json();
+    if(!d.text){
+      const er=(d.raw&&d.raw.error)||null;
+      // 무료 한도(분당 요청 수)는 잠깐 기다리면 풀린다 → 호출한 쪽이 대기·재시도할 수 있게 남은 시간을 실어 보냄
+      if(er && (er.code===429 || er.status==='RESOURCE_EXHAUSTED')){
+        const m=String(er.message||'').match(/retry in ([\d.]+)s/i);
+        const e=new Error('AI 무료 사용 한도(분당 요청 수)를 넘었습니다'); e.retryAfter=m?Math.ceil(+m[1]):45; throw e;
+      }
+      if(er) throw new Error('AI 오류: '+String(er.message||'').slice(0,160));
+      console.warn('AI 빈 응답 진단:', JSON.stringify(d.raw||d).slice(0,600));
+    }
+    return d.text||'';
   }
   const p=aiProvider(); const key=(localStorage.getItem(aiKeyK(p))||'').trim(); if(!key) throw new Error('API 키를 입력하세요');
   const model=(localStorage.getItem(aiModelK(p))||aiDefaults(p).model).trim();
@@ -694,23 +864,60 @@ function buildCatalog(){
   });
 }
 // AI에 보내는 문서 요약본 — 사진은 '몇 장 있는지'만 보냄(그림 데이터는 전송하지 않음)
-function aiPayload(items){ return items.map((it,i)=>({idx:i, title:it.title||'', bullets:(it.bullets||[]).slice(0,30), images:(it.images||[]).length})); }
+function aiPayload(items, off){ return items.map((it,i)=>({idx:(off||0)+i, title:it.title||'', bullets:(it.bullets||[]).slice(0,30), images:(it.images||[]).length})); }
+function parseSlides(txt){
+  const m=String(txt||'').match(/\{[\s\S]*\}/);
+  if(!m) throw new Error('AI 응답이 비었거나 잘렸습니다'+(txt?(': '+String(txt).slice(0,80)):''));
+  return (JSON.parse(m[0]).slides)||[];
+}
 // 원본 1장 → 교안 1장 유지 모드
 async function aiConvertKeep(items){
   const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 기존 교육자료를 '새 마스터 템플릿'으로 옮기는 작업을 합니다.\n"
-   +"규칙:\n1) **문서 항목(원본 슬라이드/절) 1개당 슬라이드를 정확히 1장** 만들고, 원본 순서를 그대로 유지합니다. 항목을 합치거나 빼지 마세요.\n"
+   +"규칙:\n1) **문서 항목(원본 슬라이드/절) 1개당 슬라이드 1장**이 기본이며, 한 항목이 구조(절차·비교)와 사진을 함께 담고 있으면 그 항목만 2장으로 나눠도 됩니다. 원본 순서는 유지하고 항목을 합치거나 빼지 마세요.\n"
    +"2) 각 슬라이드에 그 원본 항목 번호 \"idx\"를 반드시 넣으세요.\n"
    +"3) 맨 앞에 표지(id 1~3 중 하나)를 1장, 그 다음 목차(id 4)를 1장 추가할 수 있습니다(추가한 이 2장은 idx를 null).\n"
-   +"4) **images 값이 1 이상인 항목은 반드시 id 9(본문+이미지)를 쓰세요.** 사진은 도구가 장수에 맞춰 자동 배치하니, 당신은 그 슬라이드의 제목·핵심문장·설명 텍스트만 채우면 됩니다. (사진과 설명이 함께 있어야 교안이 됩니다.)\n"
-   +"5) images가 0인 항목은 내용 성격에 맞게: 절차/단계→14~16·11, 비교→17/18, 수치·비율→19~21·12, 한 문장 핵심→13, 3~4개 나열→7·10, 서술→8, 큰 주제 전환→5/6, 마무리→31.\n"
-   +"6) fields는 그 템플릿 입력칸 ord(0부터)에 넣을 실제 텍스트입니다. **원본 문장을 최대한 그대로 쓰고**(요약은 길이 초과분만), 원본에 없는 내용을 만들지 마세요. 원본 제목이 비어 있으면 본문을 보고 짧은 소제목을 지어 넣으세요.\n"
+   +"4) 사진(images≥1) 있는 항목은 **기본이 id 9(본문+이미지) 한 장**입니다 — 제목·핵심문장·설명을 채우면 사진은 도구가 옆에 배치합니다.\n"
+   +"   절차·비교 항목이 4개 이상으로 뚜렷해서 구조 템플릿이 훨씬 나을 때만 2장으로 나누고, **그때 두 번째 장도 id 9로 만들고 제목·핵심문장·설명을 반드시 채우세요.** 텍스트가 빈 슬라이드는 절대 만들지 마세요.\n"
+   +"5) 내용 성격에 맞는 템플릿을 고르세요: 절차/단계→14·15·16, 순서 있는 점검항목→11, 비교→17/18, 수치·비율→19~21·12, 한 문장 핵심→13, 3~4개 나열→7·10, 서술 설명→8, 큰 주제 전환→5/6, 마무리→31.\n"
+   +"   **사진이 있어도 내용이 절차·비교·체크리스트라면 그 구조 템플릿을 쓰세요.** 그때는 사진 슬라이드가 바로 뒤에 자동으로 하나 더 생깁니다(한 항목당 최대 2장 허용).\n"
+   +"6) **이건 발표용 교육자료입니다. 원본 문장을 그대로 옮기지 마세요.** 설명·본문 칸은 반드시 **줄바꿈 문자 \\n 으로 2~4줄로 나눠서** 넣으세요(한 줄에 한 메시지, 45자 이내). 한 칸에 긴 문장을 이어 붙이면 실패로 봅니다. 명사형·개조식으로 다듬고 군더더기(‘~한다’ 반복, 중복 설명)를 걷어내세요.\n"
+   +"   단, **검사명·수치·기준값·시약명·장비명·단위는 절대 바꾸거나 빼지 마세요**(교육자료 정확성). 원본에 ※·중요·주의 표시가 붙은 내용은 반드시 살리고 문장 앞에 '※'를 유지하세요.\n"
+   +"   작성자 메모·날짜·사번·이름 같은 잡음은 제외하세요. 원본 제목이 없으면 본문을 보고 짧은 소제목을 지어 넣으세요.\n"
    +"7) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n"
    +"출력은 오직 JSON 하나만: {\"slides\":[{\"src\":번호,\"idx\":원본항목번호 또는 null,\"fields\":{\"0\":\"..\"},\"chart\":{\"labels\":[],\"values\":[]}}]}";
-  const user="템플릿 목록:\n"+JSON.stringify(buildCatalog())+"\n\n문서 항목("+items.length+"개, 순서대로):\n"+JSON.stringify(aiPayload(items))+"\n\nJSON만 출력하세요.";
-  const txt=await aiRaw(sys,user);
-  const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error('AI 응답을 해석할 수 없습니다: '+String(txt).slice(0,120));
-  return (JSON.parse(m[0]).slides)||[];
+  // 항목이 많으면 한 번에 다 만들다 응답이 잘린다(출력 토큰 한도) → 8개씩 나눠 요청하고 이어 붙임.
+  // 한 묶음이 실패해도 그 묶음만 규칙 기반으로 떨어지게 해서 전체가 날아가지 않도록 함.
+  const B=8, all=[], cat=JSON.stringify(buildCatalog()), fb=document.getElementById('fileBar');
+  for(let s=0; s<items.length; s+=B){
+    const chunk=items.slice(s,s+B), first=(s===0);
+    if(fb) fb.textContent='🤖 AI 변환 중… '+Math.min(s+B,items.length)+'/'+items.length+' 항목';
+    const user="템플릿 목록:\n"+cat
+      +"\n\n문서 항목("+chunk.length+"개, idx는 원본 번호 그대로 유지):\n"+JSON.stringify(aiPayload(chunk,s))
+      +(first?"\n\n맨 앞에 표지 1장과 목차 1장을 추가하세요(idx는 null)."
+             :"\n\n이건 이어지는 부분입니다. 표지·목차는 만들지 마세요.")
+      +"\n\nJSON만 출력하세요.";
+    let got=null;
+    for(let tryN=0; tryN<3 && !got; tryN++){
+      try{ got=parseSlides(await aiRaw(sys,user)); }
+      catch(e){
+        if(e && e.retryAfter && tryN<2){        // 무료 한도 → 안내하고 기다렸다 다시
+          let left=Math.min(70, e.retryAfter+2);
+          while(left>0){ if(fb) fb.textContent='⏳ AI 무료 한도에 걸려 '+left+'초 대기 중… ('+Math.min(s+B,items.length)+'/'+items.length+' 항목)';
+            await new Promise(r=>setTimeout(r,1000)); left--; }
+          continue;
+        }
+        if(tryN>=1) console.error('AI 묶음 실패 → 규칙 기반으로 대체', e);
+      }
+    }
+    if(got) all.push.apply(all, got);
+    else chunk.forEach((it,i)=>{ const mp=mapItem(it); all.push({src:mp.src, idx:s+i, fields:ordsOf(mp)}); });
+  }
+  if(!all.length) throw new Error('AI가 구성을 만들지 못했습니다');
+  return all;
 }
+// 규칙 기반 결과({values:{fieldIndex:v}})를 AI 응답 형식({fields:{ord:v}})으로 되돌림
+function ordsOf(mp){ const fs=CAT[mp.src].fields, o={};
+  fs.forEach((f,ord)=>{ const v=mp.values[f.i]; if(v!=null&&String(v).trim()) o[ord]=String(v); }); return o; }
 async function aiConvert(items){
   const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 반드시 아래 '템플릿 목록'에 있는 템플릿만 사용해, 주어진 문서를 교안 슬라이드 구성으로 바꾸세요.\n규칙:\n1) 첫 슬라이드는 표지(id 1~3 중 하나).\n2) 섹션이 2개 이상이면 목차(id 4)를 두 번째에 포함.\n3) 각 내용에 '가장 알맞은' 템플릿을 고르세요: 절차/단계→다이어그램(14~16)·번호목록(11), 비교→표(17/18), 통계·수치·비율→차트(19~21)·KPI(12), 한 문장 핵심/인용→인용(13), 이미지 필요→이미지(9)·갤러리(25/26), 3~4개 나열→3열(7)·4카드(10), 서술 설명→요약(8).\n4) 억지로 같은 템플릿을 반복하거나 내용 없이 채우지 마세요. 내용에 맞는 것만.\n5) 각 슬라이드 fields는 그 템플릿 입력칸 ord(0부터)에 넣을 실제 텍스트(문서 내용 기반, 창작 최소화). 값 없으면 생략.\n6) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n출력은 오직 JSON 하나만: {\"slides\":[{\"src\":번호,\"fields\":{\"0\":\"..\",\"1\":\"..\"},\"chart\":{\"labels\":[],\"values\":[]}}]}";
   const user="템플릿 목록:\n"+JSON.stringify(buildCatalog())+"\n\n문서 내용:\n"+JSON.stringify(aiPayload(items))
@@ -723,15 +930,8 @@ async function aiConvert(items){
 function deckFromPlan(slides, items){
   const out=[];
   (slides||[]).forEach(s=>{ let src=+s.src; if(!CAT[src])return;
-    const it=(items && s.idx!=null && items[+s.idx]) ? items[+s.idx] : null;
-    const ims=it?(it.images||[]):[];
     const ordMap={}; if(s.fields) Object.keys(s.fields).forEach(o=>{ if(s.fields[o]!=null&&String(s.fields[o]).trim()) ordMap[+o]=String(s.fields[o]); });
-    // 사진이 있는 항목인데 사진 자리가 없거나 부족한 템플릿을 골랐으면 맞는 템플릿으로 교체
-    let swapped=false;
-    if(ims.length && !zoneCount(src)){ src=imgTemplate(ims.length); swapped=true; }   // 사진 자리가 아예 없는 템플릿만 교체
-    const ordVals=Object.keys(ordMap).map(Number).sort((a,b)=>a-b).map(k=>ordMap[k]);
-    const inst={src, values: swapped? fillOrds(src, ordVals) : byField(src, ordMap), images:{}};
-    attachImages(inst, ims);
+    const inst={src, values: byField(src, ordMap), images:{}, __idx:(s.idx==null?null:+s.idx)};
     if(CHARTS[src]){ const sp=CHARTS[src];
       let vals=(s.chart&&Array.isArray(s.chart.values)&&s.chart.values.length)?s.chart.values.map(Number):sp.defV.slice();
       let labs=(s.chart&&Array.isArray(s.chart.labels)&&s.chart.labels.length)?s.chart.labels.map(String):sp.defL.slice();
@@ -740,6 +940,20 @@ function deckFromPlan(slides, items){
       inst.chart={values:vals, labels:labs}; }
     out.push(inst);
   });
+  // 항목의 사진을 그 항목 슬라이드에 붙인다. 사진 자리가 있는 슬라이드가 없으면(=구조 템플릿을 골랐으면)
+  // 그 바로 뒤에 사진 전용 슬라이드를 한 장 만들어 넣는다 — 사진을 버리지 않기 위함.
+  (items||[]).forEach((it,ix)=>{
+    const ims=(it.images||[]); if(!ims.length) return;
+    const group=out.filter(b=>b.__idx===ix); if(!group.length) return;
+    let target=group.filter(b=>zoneCount(b.src)>0)[0];
+    if(!target){ const last=group[group.length-1];
+      const ttl=(it.title||Object.values(last.values)[0]||'');
+      const lead=tidyLines(it.bullets,1)[0]||'';                    // 빈 슬라이드가 되지 않게 최소한 한 줄은 채움
+      target={src:9, values:fillOrds(9,[ttl, lead, tidyLines((it.bullets||[]).slice(1),3).join('\n')]), images:{}, __idx:ix};
+      out.splice(out.indexOf(last)+1, 0, target); }
+    attachImages(target, ims);
+  });
+  out.forEach(b=>{ delete b.__idx; });
   return out;
 }
 async function importFile(file){ const ext=(file.name.split('.').pop()||'').toLowerCase(); const fb=document.getElementById('fileBar');
@@ -768,6 +982,9 @@ async function importFile(file){ const ext=(file.name.split('.').pop()||'').toLo
     SEL=start; renderDeck(); renderPreview();
     fb.textContent=`${file.name} · ${built.length}장 자동 구성 (${mode}${IMPORT_MODE==='keep'?'·원본유지':'·재구성'})`
       +(nImg?` · 사진 ${placed}/${nImg}장 배치`:'')+' · 검토·수정 후 생성';
+    if(placed){  // 원본 사진을 그대로 옮기므로 사진 속 개인정보를 사람이 확인해야 한다(자동 판별 불가)
+      fb.innerHTML=fb.textContent+'<div style="margin-top:6px;padding:6px 9px;border-radius:6px;color:#8a1220;background:#fdecef;line-height:1.6">'
+        +'⚠ <b>원본 사진이 그대로 들어갑니다.</b> 환자명·검사번호·워크리스트처럼 개인정보가 찍힌 사진이 있으면 각 카드에서 ✕로 지우고 쓰세요. (도구가 자동으로 가려주지는 못합니다.)</div>'; }
     toast(`${built.length}장 불러옴 (${mode})`+(placed?` · 사진 ${placed}장`:''));
   }catch(e){ console.error(e); fb.textContent=''; alert('파일 읽기 오류: '+(e&&e.message?e.message:e)); }
 }
@@ -788,11 +1005,19 @@ function blankSet(src, values){
 function stripBracket(t){
   return String(t).replace(/\s*[·•\-–—]\s*\[[^\]]*\]/g,'').replace(/\[[^\]]*\]/g,'').replace(/\s{2,}/g,' ').trim();
 }
+// 줄바꿈이 있는 값 → 같은 서식을 유지한 여러 줄로(a:br). 발표자료는 한 줄에 한 메시지여야 읽힘.
+function multiLineT(lines, rpr){
+  let s='<a:t>'+xesc(lines[0])+'</a:t></a:r>';
+  for(let i=1;i<lines.length;i++){ s+='<a:br>'+rpr+'</a:br><a:r>'+rpr+'<a:t>'+xesc(lines[i])+'</a:t>'+(i<lines.length-1?'</a:r>':''); }
+  return s;
+}
+function rprBefore(xml, off){ const head=xml.slice(Math.max(0,off-1200), off);
+  const m=head.match(/<a:rPr[^>]*\/>|<a:rPr[\s\S]*?<\/a:rPr>/g); return m?m[m.length-1]:'<a:rPr lang="ko-KR" dirty="0"/>'; }
 function fillSlide(xml, src, values, pageNo, total, secNo){
   const editSet=new Set(CAT[src].fields.map(f=>f.i));
   const blanks=blankSet(src, values);
   let ai=-1;
-  return xml.replace(/<a:t>([\s\S]*?)<\/a:t>/g,(m,inner)=>{
+  return xml.replace(/<a:t>([\s\S]*?)<\/a:t>/g,(m,inner,off)=>{
     ai++;
     if(isPageNo(inner)) return '<a:t>'+pageNo+' / '+total+'</a:t>';
     if(secNo && isSecNo(inner)) return '<a:t>'+String(secNo).padStart(2,'0')+'.</a:t>';
@@ -801,6 +1026,8 @@ function fillSlide(xml, src, values, pageNo, total, secNo){
       if(!(v&&String(v).trim())) return '<a:t></a:t>';
       // 장번호 배지와 같은 텍스트 상자에 붙어 있으면 한 칸 띄움 ("14.Diff count" → "14. Diff count")
       const pre = (ai>0 && isSecNo(CAT[src].aTexts[ai-1]||'')) ? ' ' : '';
+      const lines=String(v).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+      if(lines.length>1){ lines[0]=pre+lines[0]; return multiLineT(lines, rprBefore(xml,off)); }
       return '<a:t>'+pre+xesc(v)+'</a:t>'; }
     if(/\[[^\]]*\]/.test(inner) && !isImgHint(inner)) return '<a:t>'+xesc(stripBracket(inner))+'</a:t>';
     return m;
@@ -907,9 +1134,15 @@ async function genPPT(){
     // 다운로드
     const blob=await zip.generateAsync({type:'blob'});
     const fn='교안_씨젠_'+stamp()+'.pptx';
-    const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=fn; a.style.display='none'; document.body.appendChild(a); a.click();
-    setTimeout(()=>{ try{document.body.removeChild(a);}catch(_){} URL.revokeObjectURL(url); },2000);
-    toast('교안 PPT 다운로드 완료 ('+M+'장)');
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download=fn; a.style.display='none'; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ try{document.body.removeChild(a);}catch(_){} },2000);
+    // 파일을 직접 열었을 때(file://) 등 자동 저장이 막히는 환경 대비 — 눈에 보이는 저장 버튼을 남긴다.
+    // (blob 주소는 이 버튼이 살아 있는 동안 유지하고 10분 뒤 정리)
+    const sl=document.getElementById('saveLink');
+    if(sl){ sl.href=url; sl.download=fn; sl.textContent='⬇ 저장 안 됐으면 여기 ('+Math.round(blob.size/1024/1024*10)/10+'MB)'; sl.style.display='';
+      clearTimeout(window.__slT); window.__slT=setTimeout(()=>{ sl.style.display='none'; URL.revokeObjectURL(url); }, 600000); }
+    toast('교안 PPT 다운로드 완료 ('+M+'장) — 저장창이 안 뜨면 오른쪽 [저장] 버튼');
   }catch(e){ console.error(e); alert('생성 오류: '+(e&&e.message?e.message:e)); }
   finally{ btn.disabled=false; btn.textContent='⬇ 교안 PPT 다운로드'; }
 }
