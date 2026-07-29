@@ -112,6 +112,12 @@ window.__XLSX__="LyogeGxzeC1qcy1zdHlsZSAxLjIuMC1iZXRhIEAgMjAyMi0wNC0wNVQwMTo0MDo
       <div id="drop" class="empty" style="cursor:pointer">📄 <b>.pptx · .docx · .xlsx · .pdf · .txt</b> 끌어다 놓거나 클릭
         <input id="fileIn" type="file" accept=".pptx,.docx,.xlsx,.xls,.pdf,.txt" hidden></div>
       <div id="fileBar" style="margin-top:9px;font-size:12px;color:var(--sub)"></div>
+      <div style="margin-top:9px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:12px">
+        <span style="color:var(--sub)">변환 방식</span>
+        <span class="chip on" id="modeKeep" onclick="setImportMode('keep')">원본 1장 → 교안 1장</span>
+        <span class="chip" id="modeSum" onclick="setImportMode('sum')">내용 요약해 재구성</span>
+        <span style="color:var(--sub)">· 원본 사진은 그대로 가져옵니다(PPT·워드)</span>
+      </div>
       <div class="aibox">
         <label class="aitog"><input type="checkbox" id="aiOn"><b>AI 자동 매칭</b><span style="color:var(--sub);font-weight:400">— 문서를 이해해 알맞은 템플릿으로 변환 (온라인)</span></label>
         <div id="aiCfg">
@@ -177,6 +183,32 @@ const ZONES={
   26:[[120,130,553,405],[683,130,553,405],[1246,130,554,405],[120,545,553,405],[683,545,553,405],[1246,545,554,405]]
 };
 const EMU=9525;             // px -> EMU (96dpi)
+/* 사진 자리 재계산 — 템플릿의 고정 칸(4칸·6칸)을 그대로 쓰면 사진 2장일 때 아래 절반이 비므로,
+   사진 영역 전체를 실제 장수에 맞춰 다시 나눔. 남는 칸 도형은 생성 시 제거된다. */
+function areaOf(src){ const zs=ZONES[src]; if(!zs||!zs.length) return null;
+  const x1=Math.min.apply(null,zs.map(z=>z[0])), y1=Math.min.apply(null,zs.map(z=>z[1]));
+  const x2=Math.max.apply(null,zs.map(z=>z[0]+z[2])), y2=Math.max.apply(null,zs.map(z=>z[1]+z[3]));
+  return [x1,y1,x2-x1,y2-y1]; }
+function gridZones(base, n){ if(!base) return []; if(n<=1) return [base.slice()];
+  const cols=(n<=2?1:(n<=4?2:3)), rows=Math.ceil(n/cols), gap=14;
+  const cw=Math.floor((base[2]-gap*(cols-1))/cols), ch=Math.floor((base[3]-gap*(rows-1))/rows);
+  const out=[]; for(let i=0;i<n;i++){ const r=Math.floor(i/cols), c=i%cols;
+    out.push([base[0]+c*(cw+gap), base[1]+r*(ch+gap), cw, ch]); }
+  return out; }
+function imgList(inst){ const im=inst.images||{}; return Object.keys(im).map(Number).sort((a,b)=>a-b).map(k=>im[k]); }
+function reindexImages(inst){ const l=imgList(inst); inst.images={}; l.forEach((im,i)=>{ inst.images[i]=im; }); }
+// 화면·PPT가 공유하는 실제 사진 자리
+function instZones(inst){ if(!(ZONES[inst.src]||[]).length) return null;
+  const n=imgList(inst).length;
+  if(!n) return ZONES[inst.src];                       // 사진 없으면 템플릿 원래 칸을 그대로 보여줌
+  return gridZones(areaOf(inst.src), Math.min(n,6)); }
+// 첨부 UI에 보여줄 칸 수(항상 한 칸은 여유 — 사진을 더 넣을 수 있게)
+function slotCount(inst){ const base=(ZONES[inst.src]||[]).length; if(!base) return 0;
+  return Math.min(6, Math.max(base, imgList(inst).length+1)); }
+// 칸 안에 비율 유지하며 가운데 맞춤(잘라내지 않음 — 현미경 사진 등은 잘리면 내용이 사라짐)
+function fitRect(cell, iw, ih){ const r=Math.min(cell[2]/iw, cell[3]/ih);
+  const w=Math.max(1,Math.round(iw*r)), h=Math.max(1,Math.round(ih*r));
+  return [Math.round(cell[0]+(cell[2]-w)/2), Math.round(cell[1]+(cell[3]-h)/2), w, h]; }
 // 차트 스펙 (마스터에서 추출한 좌표/기본값) — 값 입력 시 도형/이미지 재계산
 const CHARTS={
   19:{type:'barV',n:5,unit:'',max:100, defV:[55,72,40,88,96], defL:['그림 1','그림 2','그림 3','그림 4','그림 5'],
@@ -339,12 +371,12 @@ function renderDeck(){
     let ih='';
     const zs=ZONES[inst.src];
     if(zs){
-      let slots='';
-      zs.forEach((z,si)=>{ const im=inst.images[si];
+      let slots=''; const ns=slotCount(inst), nAtt=imgList(inst).length;
+      for(let si=0;si<ns;si++){ const im=inst.images[si];
         slots+=`<div class="imgslot" onclick="pickImage(${k},${si})">`+
           (im?`<img src="${im.data}"><button class="rm" title="제거" onclick="event.stopPropagation();removeImage(${k},${si})">✕</button>`
-             :`＋ 이미지 ${si+1}`)+`</div>`; });
-      ih=`<div class="imglabel">🖼 이미지 ${zs.length>1?('('+zs.length+'칸) '):''}— 클릭해 첨부하면 자리표시에 자동 배치</div><div class="imgrow">${slots}</div>`;
+             :`＋ 이미지 ${si+1}`)+`</div>`; }
+      ih=`<div class="imglabel">🖼 사진 ${nAtt?(nAtt+'장 — 장수에 맞춰 자동 배치(비율 유지)'):'— 클릭해 첨부'}</div><div class="imgrow">${slots}</div>`;
     }
     // 차트 값 입력 UI
     let chh='';
@@ -398,9 +430,14 @@ function renderPreview(){
   // 차트: 값 반영해 다시 그림
   if(CHARTS[inst.src] && inst.chart){ cont.insertAdjacentHTML('beforeend', chartPreviewHTML(inst.src, inst.chart)); }
   // 이미지 자리표시에 첨부 이미지 오버레이 (object-fit:cover = PPT의 채움 크롭과 동일)
-  const zs=ZONES[inst.src], imgs=inst.images||{};
-  if(zs){ zs.forEach((z,si)=>{ const im=imgs[si]; if(!im)return;
-      cont.insertAdjacentHTML('beforeend',`<img src="${im.data}" style="position:absolute;left:${z[0]}px;top:${z[1]}px;width:${z[2]}px;height:${z[3]}px;object-fit:cover;z-index:60">`); }); }
+  const ims=imgList(inst), cells=instZones(inst);
+  if(cells && ims.length){
+    // 다운로드 때 템플릿의 사진칸 도형이 제거되므로 미리보기도 같은 자리를 흰색으로 덮고 사진을 올림
+    (ZONES[inst.src]||[]).forEach(z=>{ cont.insertAdjacentHTML('beforeend',
+      `<div style="position:absolute;left:${z[0]-2}px;top:${z[1]-2}px;width:${z[2]+4}px;height:${z[3]+4}px;background:#fff;z-index:58"></div>`); });
+    ims.forEach((im,i)=>{ const c=cells[i]; if(!c) return;
+      cont.insertAdjacentHTML('beforeend',`<img src="${im.data}" style="position:absolute;left:${c[0]}px;top:${c[1]}px;width:${c[2]}px;height:${c[3]}px;object-fit:contain;z-index:60">`); });
+  }
   scalePV();
   title.textContent=(SEL+1)+'. '+CAT[inst.src].label;
 }
@@ -410,7 +447,7 @@ function pvNext(){ if(SEL>=0 && SEL<DECK.length-1) selectCard(SEL+1); }
 
 /* ===== 이미지 첨부: 어떤 형식이든 PNG로 변환(호환성) + 과대이미지 축소 ===== */
 function pickImage(k,slot){ IMG_TARGET={k,slot}; const ii=document.getElementById('imgIn'); ii.value=''; ii.click(); }
-function removeImage(k,slot){ if(DECK[k]&&DECK[k].images){ delete DECK[k].images[slot]; renderDeck(); if(SEL===k)renderPreview(); } }
+function removeImage(k,slot){ if(DECK[k]&&DECK[k].images){ delete DECK[k].images[slot]; reindexImages(DECK[k]); renderDeck(); if(SEL===k)renderPreview(); } }
 function processImage(file){ return new Promise((res,rej)=>{
   const url=URL.createObjectURL(file); const img=new Image();
   img.onload=()=>{ try{
@@ -419,7 +456,7 @@ function processImage(file){ return new Promise((res,rej)=>{
       const cv=document.createElement('canvas'); cv.width=cw; cv.height=ch; const ctx=cv.getContext('2d');
       ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch); ctx.drawImage(img,0,0,cw,ch);
       const data=cv.toDataURL('image/png'); URL.revokeObjectURL(url);
-      res({data, w:cw, h:ch});
+      res({data, w:cw, h:ch, ext:'png'});
     }catch(e){ URL.revokeObjectURL(url); rej(e); } };
   img.onerror=()=>{ URL.revokeObjectURL(url); rej(new Error('지원하지 않거나 손상된 이미지입니다')); };
   img.src=url;
@@ -427,7 +464,7 @@ function processImage(file){ return new Promise((res,rej)=>{
 document.getElementById('imgIn').addEventListener('change',async e=>{
   const file=e.target.files[0]; if(!file||!IMG_TARGET)return; const {k,slot}=IMG_TARGET;
   if(!/^image\//.test(file.type)){ alert('이미지 파일만 첨부할 수 있습니다.'); return; }
-  try{ const im=await processImage(file); if(!DECK[k])return; if(!DECK[k].images)DECK[k].images={}; DECK[k].images[slot]=im; renderDeck(); if(SEL!==k){SEL=k;} renderPreview(); toast('이미지 첨부됨'); }
+  try{ const im=await processImage(file); if(!DECK[k])return; if(!DECK[k].images)DECK[k].images={}; DECK[k].images[slot]=im; reindexImages(DECK[k]); renderDeck(); if(SEL!==k){SEL=k;} renderPreview(); toast('이미지 첨부됨'); }
   catch(err){ alert('이미지 처리 오류: '+(err&&err.message?err.message:err)); }
 });
 
@@ -443,33 +480,128 @@ function baseName(n){return String(n||'').replace(/\.[^.]+$/,'');}
 function readAB(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsArrayBuffer(f);});}
 function readTx(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsText(f);});}
 function ln(t){return String(t||'').split('\n').map(x=>x.trim()).filter(Boolean);}
+/* 원본 파일에서 그림 꺼내오기 — rId → ppt/media 경로 매핑 후 PNG data URI로 변환.
+   로고·아이콘 같은 작은 그림과 변환 불가 형식(EMF/WMF)은 건너뜀. */
+function relImageMap(relsXml, base){
+  const map={}; (String(relsXml).match(/<Relationship[^>]*\/?>/g)||[]).forEach(r=>{
+    if(!/\/image"/.test(r)) return;
+    const id=(r.match(/Id="([^"]+)"/)||[])[1], tg=(r.match(/Target="([^"]+)"/)||[])[1]||'';
+    if(id) map[id]=tg.replace(/^\.\.\//, base).replace(/^\//,'');
+  });
+  return map;
+}
+function imgDim(dataUri){ return new Promise((res,rej)=>{ const i=new Image();
+  i.onload=()=>res({w:i.naturalWidth,h:i.naturalHeight}); i.onerror=()=>rej(new Error('bad image')); i.src=dataUri; }); }
+async function grabImages(zip, ids, map, max){
+  const out=[], seen={};
+  for(const id of ids){
+    if(out.length>=(max||6)) break;
+    const path=map[id]; if(!path||seen[id]) continue; seen[id]=1;
+    const f=zip.file(path); if(!f) continue;
+    const ext=(path.split('.').pop()||'').toLowerCase();
+    try{
+      if(/^(png|jpe?g|gif)$/.test(ext)){
+        // 원본 바이트를 그대로 씀 — 캔버스로 다시 그리면 사진이 PNG로 부풀어 파일이 몇 배가 됨
+        const mime=ext==='png'?'image/png':(ext==='gif'?'image/gif':'image/jpeg');
+        const data='data:'+mime+';base64,'+(await f.async('base64'));
+        const d=await imgDim(data);
+        if(d.w>=90 && d.h>=90) out.push({data, w:d.w, h:d.h, ext:(ext==='jpg'?'jpeg':ext)});   // 90px 미만 = 로고·아이콘류
+      } else {
+        const im=await processImage(await f.async('blob'));                                     // 그 외 형식은 PNG로 변환
+        if(im.w>=90 && im.h>=90) out.push(im);
+      }
+    }catch(_){}                                      // EMF/WMF 등 브라우저가 못 읽는 형식은 조용히 건너뜀
+  }
+  return out;
+}
+function isJustNum(s){ return /^\s*\d{1,3}\s*$/.test(String(s)); }
+// 슬라이드 1장 → {제목, 불릿, 이미지들}. 제목은 ①제목 자리표시 ②가장 큰 글자 ③첫 줄 순서로 판정
+// (원본 첫 줄이 페이지번호인 자료가 많아 '첫 줄=제목'만으로는 번호가 제목이 됨)
+async function pptxSlideItem(zip, n, num){
+  const xml=await zip.file(n).async('string');
+  const doc=new DOMParser().parseFromString(xml,'application/xml');
+  const paras=[];
+  [...doc.getElementsByTagName('p:sp')].forEach(sp=>{
+    const ph=sp.getElementsByTagName('p:ph')[0];
+    const phType=ph?(ph.getAttribute('type')||'body'):'';
+    [...sp.getElementsByTagName('a:p')].forEach(p=>{
+      const t=[...p.getElementsByTagName('a:t')].map(x=>x.textContent).join('').replace(/\s+/g,' ').trim();
+      if(!t) return;
+      let sz=0; [...p.getElementsByTagName('a:rPr')].forEach(r=>{ const s=+(r.getAttribute('sz')||0); if(s>sz)sz=s; });
+      paras.push({t, sz, ph:phType});
+    });
+  });
+  const body=paras.filter(p=>!isJustNum(p.t));
+  let title='';
+  const phT=body.find(p=>p.ph==='title'||p.ph==='ctrTitle');
+  if(phT) title=phT.t;
+  else { const mx=body.reduce((a,p)=>Math.max(a,p.sz),0);
+         const big=mx?body.find(p=>p.sz===mx):null; title=big?big.t:(body[0]?body[0].t:''); }
+  let used=false;
+  const bullets=body.filter(p=>{ if(!used && p.t===title){ used=true; return false; } return true; }).map(p=>p.t);
+  const rf=zip.file('ppt/slides/_rels/slide'+num+'.xml.rels');
+  const map=rf?relImageMap(await rf.async('string'),'ppt/'):{};
+  const ids=[...xml.matchAll(/<a:blip[^>]*r:embed="([^"]+)"/g)].map(m=>m[1]);
+  const images=await grabImages(zip, ids, map, 6);
+  return {title, bullets, image:images.length>0, images};
+}
 async function parsePptxItems(ab){ const zip=await JSZip.loadAsync(ab);
   const ns=Object.keys(zip.files).filter(n=>/^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a,b)=>(+a.match(/slide(\d+)/)[1])-(+b.match(/slide(\d+)/)[1]));
-  const items=[]; for(const n of ns){ const xml=await zip.file(n).async('string');
-    const ps=[...new DOMParser().parseFromString(xml,'application/xml').getElementsByTagName('a:p')].map(p=>[...p.getElementsByTagName('a:t')].map(t=>t.textContent).join('').trim()).filter(Boolean);
-    const hasImg=/<a:blip/.test(xml); if(!ps.length&&!hasImg) continue;
-    items.push({title:ps[0]||'', bullets:ps.slice(1), image:hasImg}); } return items;
+  const items=[];
+  for(const n of ns){ const it=await pptxSlideItem(zip, n, +n.match(/slide(\d+)/)[1]);
+    if(!it.title && !it.bullets.length && !it.images.length) continue; items.push(it); }
+  return items;
 }
 async function parseDocxItems(ab){ const zip=await JSZip.loadAsync(ab); const f=zip.file('word/document.xml'); if(!f)return [];
+  const rf=zip.file('word/_rels/document.xml.rels');
+  const map=rf?relImageMap(await rf.async('string'),'word/'):{};
   const doc=new DOMParser().parseFromString(await f.async('string'),'application/xml'); const items=[]; let cur=null;
-  for(const p of [...doc.getElementsByTagName('w:p')]){ const txt=[...p.getElementsByTagName('w:t')].map(t=>t.textContent).join('').trim();
-    const ps=p.getElementsByTagName('w:pStyle')[0]; const sv=ps?(ps.getAttribute('w:val')||''):''; const head=/heading|title|제목/i.test(sv)||/^[1-3]$/.test(sv);
-    if(!txt)continue; if(head){cur={title:txt,bullets:[]};items.push(cur);} else {if(!cur){cur={title:'',bullets:[]};items.push(cur);} cur.bullets.push(txt);} }
-  return items.filter(it=>it.title||it.bullets.length);
+  const ensure=()=>{ if(!cur){cur={title:'',bullets:[],images:[]}; items.push(cur);} return cur; };
+  for(const p of [...doc.getElementsByTagName('w:p')]){
+    const txt=[...p.getElementsByTagName('w:t')].map(t=>t.textContent).join('').trim();
+    const ids=[...new XMLSerializer().serializeToString(p).matchAll(/r:embed="([^"]+)"/g)].map(m=>m[1]);
+    const ps=p.getElementsByTagName('w:pStyle')[0]; const sv=ps?(ps.getAttribute('w:val')||''):'';
+    const head=/heading|title|제목/i.test(sv)||/^[1-3]$/.test(sv);
+    if(txt&&head){ cur={title:txt,bullets:[],images:[]}; items.push(cur); }
+    else if(txt){ ensure().bullets.push(txt); }
+    if(ids.length){ const ims=await grabImages(zip, ids, map, 6); ensure().images.push(...ims); }
+  }
+  items.forEach(it=>{ it.images=(it.images||[]).slice(0,6); it.image=it.images.length>0; });
+  return items.filter(it=>it.title||it.bullets.length||it.images.length);
 }
 function parseXlsxItems(ab){ const wb=XLSX.read(ab,{type:'array'}); const items=[];
   wb.SheetNames.forEach(sn=>{ const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:''}).map(r=>r.map(c=>String(c==null?'':c).trim()).filter(Boolean).join(' · ')).filter(Boolean);
     if(rows.length) items.push({title:sn,bullets:rows}); }); return items;
 }
-async function parsePdfItems(ab){ if(typeof pdfjsLib==='undefined')throw new Error('PDF 라이브러리 로드 중'); const pdf=await pdfjsLib.getDocument({data:ab}).promise; const items=[];
+async function parsePdfItems(ab){ if(typeof pdfjsLib==='undefined')throw new Error('PDF 라이브러리 로드 중'); const pdf=await pdfjsLib.getDocument({data:ab}).promise;
+  const pages=[];
   for(let i=1;i<=pdf.numPages;i++){ const tc=await (await pdf.getPage(i)).getTextContent(); const lm={};
     tc.items.forEach(t=>{const s=(t.str||'').trim();if(!s)return;const y=Math.round(t.transform[5]);(lm[y]=lm[y]||[]).push(s);});
-    const lines=Object.keys(lm).map(Number).sort((a,b)=>b-a).map(y=>lm[y].join(' ').trim()).filter(Boolean);
-    if(lines.length) items.push({title:lines[0],bullets:lines.slice(1)}); } return items;
+    pages.push(Object.keys(lm).map(Number).sort((a,b)=>b-a).map(y=>lm[y].join(' ').trim()).filter(Boolean));
+  }
+  // 여러 페이지에 반복되는 줄 = 머리글·꼬리말(문서번호·제정일 등) → 제목 후보에서 제외.
+  // 이걸 안 걸러내면 페이지 첫 줄이 늘 머리글이라 모든 장의 제목이 같아짐.
+  const freq={}; pages.forEach(ls=>{ new Set(ls).forEach(l=>freq[l]=(freq[l]||0)+1); });
+  const rep=pages.length>=3 ? Math.max(2, Math.ceil(pages.length*0.5)) : 1e9;
+  const isChrome=l=>isJustNum(l)||(freq[l]||0)>=rep;
+  const items=[];
+  pages.forEach(ls=>{ const body=ls.filter(l=>!isChrome(l));
+    if(!body.length) return; items.push({title:body[0], bullets:body.slice(1), image:false, images:[]}); });
+  return items;
 }
 function byField(src, ordMap){ const vals={}; const fs=CAT[src].fields; Object.keys(ordMap).forEach(o=>{ const f=fs[+o]; if(f&&ordMap[o]) vals[f.i]=ordMap[o]; }); return vals; }
+// 값 배열을 입력칸 순서대로 채움(템플릿을 바꿔 끼울 때 사용)
+function fillOrds(src, arr){ const m={}, n=CAT[src].fields.length; arr.slice(0,n).forEach((v,i)=>{ if(v&&String(v).trim()) m[i]=String(v); }); return byField(src,m); }
+// 사진이 있는 항목은 본문+이미지(9)를 쓴다 — 갤러리(25/26)는 설명 칸이 없어 원본 설명이 통째로 사라짐.
+// 사진 여러 장도 오른쪽 이미지 영역을 나눠 배치하므로 텍스트와 사진이 같이 살아남는다.
+function imgTemplate(n){ return 9; }
+function zoneCount(src){ return (ZONES[src]||[]).length; }
+function attachImages(inst, ims){ (ims||[]).slice(0,6).forEach((im,i)=>{ inst.images[i]=im; }); return inst; }
 // 한 항목(제목+불릿) → 성격에 맞는 템플릿 선택
-function mapItem(it){ const t=it.title||'', b=(it.bullets||[]).filter(Boolean);
+function mapItem(it){ const t=it.title||'', b=(it.bullets||[]).filter(Boolean); const ims=(it.images||[]);
+  if(ims.length){ const src=imgTemplate(ims.length);
+    // 9번은 입력칸이 [핵심문장, 상세설명] 2개 — 불릿을 한 칸에 모아 넣어 원본 설명이 사라지지 않게
+    return attachImages({src, values:fillOrds(src,[t, b.join(' · ')]), images:{}}, ims); }
   if(it.image) return {src:9, values:byField(9,{0:t,1:b[0]||'',2:b.slice(1).join(' ')})};
   if(!b.length) return {src:5, values:byField(5,{0:t})};                                   // 제목만 → 챕터
   if(b.length<=2) return {src:8, values:byField(8,{0:t,1:b[0]||'',2:b.slice(1).join(' ')})}; // 1~2줄 → 본문 요약
@@ -490,6 +622,13 @@ function sectionizeText(text, fallback){
   const blocks=String(text||'').split(/\n\s*\n/).map(b=>b.split('\n').map(x=>x.trim()).filter(Boolean)).filter(b=>b.length);
   if(blocks.length<=1){ return [{title:fallback, bullets:ln(text)}]; }
   return blocks.map(b=>({title:b[0], bullets:b.slice(1)}));
+}
+
+/* ===== 변환 방식: keep = 원본 1장→교안 1장(사진·소제목 그대로), sum = 내용 요약해 재구성 ===== */
+let IMPORT_MODE = localStorage.getItem('edu_ppt_mode')||'keep';
+function setImportMode(m){ IMPORT_MODE=m; localStorage.setItem('edu_ppt_mode',m);
+  const k=document.getElementById('modeKeep'), s=document.getElementById('modeSum');
+  if(k) k.classList.toggle('on', m==='keep'); if(s) s.classList.toggle('on', m==='sum');
 }
 
 /* ===== AI 자동 매칭 (온라인) ===== */
@@ -554,18 +693,45 @@ function buildCatalog(){
     return o;
   });
 }
-async function aiConvert(items){
-  const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 반드시 아래 '템플릿 목록'에 있는 템플릿만 사용해, 주어진 문서를 교안 슬라이드 구성으로 바꾸세요.\n규칙:\n1) 첫 슬라이드는 표지(id 1~3 중 하나).\n2) 섹션이 2개 이상이면 목차(id 4)를 두 번째에 포함.\n3) 각 내용에 '가장 알맞은' 템플릿을 고르세요: 절차/단계→다이어그램(14~16)·번호목록(11), 비교→표(17/18), 통계·수치·비율→차트(19~21)·KPI(12), 한 문장 핵심/인용→인용(13), 이미지 필요→이미지(9)·갤러리(25/26), 3~4개 나열→3열(7)·4카드(10), 서술 설명→요약(8).\n4) 억지로 같은 템플릿을 반복하거나 내용 없이 채우지 마세요. 내용에 맞는 것만.\n5) 각 슬라이드 fields는 그 템플릿 입력칸 ord(0부터)에 넣을 실제 텍스트(문서 내용 기반, 창작 최소화). 값 없으면 생략.\n6) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n출력은 오직 JSON 하나만: {\"slides\":[{\"src\":번호,\"fields\":{\"0\":\"..\",\"1\":\"..\"},\"chart\":{\"labels\":[],\"values\":[]}}]}";
-  const user="템플릿 목록:\n"+JSON.stringify(buildCatalog())+"\n\n문서 내용:\n"+JSON.stringify(items)+"\n\nJSON만 출력하세요.";
+// AI에 보내는 문서 요약본 — 사진은 '몇 장 있는지'만 보냄(그림 데이터는 전송하지 않음)
+function aiPayload(items){ return items.map((it,i)=>({idx:i, title:it.title||'', bullets:(it.bullets||[]).slice(0,30), images:(it.images||[]).length})); }
+// 원본 1장 → 교안 1장 유지 모드
+async function aiConvertKeep(items){
+  const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 기존 교육자료를 '새 마스터 템플릿'으로 옮기는 작업을 합니다.\n"
+   +"규칙:\n1) **문서 항목(원본 슬라이드/절) 1개당 슬라이드를 정확히 1장** 만들고, 원본 순서를 그대로 유지합니다. 항목을 합치거나 빼지 마세요.\n"
+   +"2) 각 슬라이드에 그 원본 항목 번호 \"idx\"를 반드시 넣으세요.\n"
+   +"3) 맨 앞에 표지(id 1~3 중 하나)를 1장, 그 다음 목차(id 4)를 1장 추가할 수 있습니다(추가한 이 2장은 idx를 null).\n"
+   +"4) **images 값이 1 이상인 항목은 반드시 id 9(본문+이미지)를 쓰세요.** 사진은 도구가 장수에 맞춰 자동 배치하니, 당신은 그 슬라이드의 제목·핵심문장·설명 텍스트만 채우면 됩니다. (사진과 설명이 함께 있어야 교안이 됩니다.)\n"
+   +"5) images가 0인 항목은 내용 성격에 맞게: 절차/단계→14~16·11, 비교→17/18, 수치·비율→19~21·12, 한 문장 핵심→13, 3~4개 나열→7·10, 서술→8, 큰 주제 전환→5/6, 마무리→31.\n"
+   +"6) fields는 그 템플릿 입력칸 ord(0부터)에 넣을 실제 텍스트입니다. **원본 문장을 최대한 그대로 쓰고**(요약은 길이 초과분만), 원본에 없는 내용을 만들지 마세요. 원본 제목이 비어 있으면 본문을 보고 짧은 소제목을 지어 넣으세요.\n"
+   +"7) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n"
+   +"출력은 오직 JSON 하나만: {\"slides\":[{\"src\":번호,\"idx\":원본항목번호 또는 null,\"fields\":{\"0\":\"..\"},\"chart\":{\"labels\":[],\"values\":[]}}]}";
+  const user="템플릿 목록:\n"+JSON.stringify(buildCatalog())+"\n\n문서 항목("+items.length+"개, 순서대로):\n"+JSON.stringify(aiPayload(items))+"\n\nJSON만 출력하세요.";
   const txt=await aiRaw(sys,user);
   const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error('AI 응답을 해석할 수 없습니다: '+String(txt).slice(0,120));
   return (JSON.parse(m[0]).slides)||[];
 }
-function deckFromPlan(slides){
+async function aiConvert(items){
+  const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 반드시 아래 '템플릿 목록'에 있는 템플릿만 사용해, 주어진 문서를 교안 슬라이드 구성으로 바꾸세요.\n규칙:\n1) 첫 슬라이드는 표지(id 1~3 중 하나).\n2) 섹션이 2개 이상이면 목차(id 4)를 두 번째에 포함.\n3) 각 내용에 '가장 알맞은' 템플릿을 고르세요: 절차/단계→다이어그램(14~16)·번호목록(11), 비교→표(17/18), 통계·수치·비율→차트(19~21)·KPI(12), 한 문장 핵심/인용→인용(13), 이미지 필요→이미지(9)·갤러리(25/26), 3~4개 나열→3열(7)·4카드(10), 서술 설명→요약(8).\n4) 억지로 같은 템플릿을 반복하거나 내용 없이 채우지 마세요. 내용에 맞는 것만.\n5) 각 슬라이드 fields는 그 템플릿 입력칸 ord(0부터)에 넣을 실제 텍스트(문서 내용 기반, 창작 최소화). 값 없으면 생략.\n6) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n출력은 오직 JSON 하나만: {\"slides\":[{\"src\":번호,\"fields\":{\"0\":\"..\",\"1\":\"..\"},\"chart\":{\"labels\":[],\"values\":[]}}]}";
+  const user="템플릿 목록:\n"+JSON.stringify(buildCatalog())+"\n\n문서 내용:\n"+JSON.stringify(aiPayload(items))
+    +"\n\n각 슬라이드에는 근거가 된 원본 항목 번호 \"idx\"를 넣으세요(사진을 그 자리에 붙이기 위함). images가 1 이상인 항목을 쓸 때는 id 9(본문+이미지)를 고르세요 — 사진 배치는 도구가 알아서 하고, 당신은 텍스트만 채웁니다.\n\nJSON만 출력하세요.";
+  const txt=await aiRaw(sys,user);
+  const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error('AI 응답을 해석할 수 없습니다: '+String(txt).slice(0,120));
+  return (JSON.parse(m[0]).slides)||[];
+}
+// AI가 만든 구성 + 원본 항목(사진 포함) → 실제 덱
+function deckFromPlan(slides, items){
   const out=[];
-  (slides||[]).forEach(s=>{ const src=+s.src; if(!CAT[src])return;
+  (slides||[]).forEach(s=>{ let src=+s.src; if(!CAT[src])return;
+    const it=(items && s.idx!=null && items[+s.idx]) ? items[+s.idx] : null;
+    const ims=it?(it.images||[]):[];
     const ordMap={}; if(s.fields) Object.keys(s.fields).forEach(o=>{ if(s.fields[o]!=null&&String(s.fields[o]).trim()) ordMap[+o]=String(s.fields[o]); });
-    const inst={src, values:byField(src, ordMap), images:{}};
+    // 사진이 있는 항목인데 사진 자리가 없거나 부족한 템플릿을 골랐으면 맞는 템플릿으로 교체
+    let swapped=false;
+    if(ims.length && !zoneCount(src)){ src=imgTemplate(ims.length); swapped=true; }   // 사진 자리가 아예 없는 템플릿만 교체
+    const ordVals=Object.keys(ordMap).map(Number).sort((a,b)=>a-b).map(k=>ordMap[k]);
+    const inst={src, values: swapped? fillOrds(src, ordVals) : byField(src, ordMap), images:{}};
+    attachImages(inst, ims);
     if(CHARTS[src]){ const sp=CHARTS[src];
       let vals=(s.chart&&Array.isArray(s.chart.values)&&s.chart.values.length)?s.chart.values.map(Number):sp.defV.slice();
       let labs=(s.chart&&Array.isArray(s.chart.labels)&&s.chart.labels.length)?s.chart.labels.map(String):sp.defL.slice();
@@ -585,20 +751,24 @@ async function importFile(file){ const ext=(file.name.split('.').pop()||'').toLo
     else if(ext==='pdf') items=await parsePdfItems(await readAB(file));
     else if(ext==='txt'){ items=sectionizeText(await readTx(file), baseName(file.name)); }
     else { fb.textContent=''; alert('지원하지 않는 형식입니다.'); return; }
-    items=items.filter(it=>it.title||(it.bullets&&it.bullets.length)).slice(0,60);
+    items=items.filter(it=>it.title||(it.bullets&&it.bullets.length)||(it.images&&it.images.length)).slice(0,60);
     if(!items.length){ fb.textContent='가져올 내용을 못 찾았습니다.'; return; }
+    const nImg=items.reduce((a,it)=>a+((it.images||[]).length),0);
     if(DECK.length){ if(confirm('기존 구성('+DECK.length+'장)을 지우고 이 문서로 새로 만들까요?\n확인 = 새로 만들기 / 취소 = 기존 뒤에 추가')){ DECK=[]; SEL=-1; } }
     let built, mode='규칙';
     if(aiEnabled()){
-      fb.textContent='🤖 AI가 문서를 분석해 알맞은 템플릿을 고르는 중…';
-      try{ const slides=await aiConvert(items); built=deckFromPlan(slides); if(!built.length) throw new Error('AI가 구성을 만들지 못했습니다'); mode='AI'; }
+      fb.textContent='🤖 AI가 문서를 분석해 알맞은 템플릿을 고르는 중…'+(nImg?(' (사진 '+nImg+'장 포함)'):'');
+      try{ const slides= IMPORT_MODE==='keep' ? await aiConvertKeep(items) : await aiConvert(items);
+           built=deckFromPlan(slides, items); if(!built.length) throw new Error('AI가 구성을 만들지 못했습니다'); mode='AI'; }
       catch(err){ console.error(err); if(!confirm('AI 매칭 실패:\n'+(err&&err.message?err.message:err)+'\n\n규칙 기반으로 대신 배치할까요?')){ fb.textContent='AI 매칭 실패 — 설정을 확인하세요'; return; } built=buildDeck(items, file.name); }
     } else { built=buildDeck(items, file.name); }
     const start=DECK.length;
     built.forEach(m=>DECK.push({src:m.src, values:m.values, images:m.images||{}, chart:m.chart}));
+    const placed=built.reduce((a,m)=>a+Object.keys(m.images||{}).length,0);
     SEL=start; renderDeck(); renderPreview();
-    fb.textContent=`${file.name} · ${built.length}장 자동 구성 (${mode}) · 검토·수정 후 생성`;
-    toast(`${built.length}장 불러옴 (${mode})`);
+    fb.textContent=`${file.name} · ${built.length}장 자동 구성 (${mode}${IMPORT_MODE==='keep'?'·원본유지':'·재구성'})`
+      +(nImg?` · 사진 ${placed}/${nImg}장 배치`:'')+' · 검토·수정 후 생성';
+    toast(`${built.length}장 불러옴 (${mode})`+(placed?` · 사진 ${placed}장`:''));
   }catch(e){ console.error(e); fb.textContent=''; alert('파일 읽기 오류: '+(e&&e.message?e.message:e)); }
 }
 
@@ -627,7 +797,11 @@ function fillSlide(xml, src, values, pageNo, total, secNo){
     if(isPageNo(inner)) return '<a:t>'+pageNo+' / '+total+'</a:t>';
     if(secNo && isSecNo(inner)) return '<a:t>'+String(secNo).padStart(2,'0')+'.</a:t>';
     if(blanks.has(ai)) return '<a:t></a:t>';
-    if(editSet.has(ai)){ const v=values[ai]; return (v&&String(v).trim())? '<a:t>'+xesc(v)+'</a:t>' : '<a:t></a:t>'; }
+    if(editSet.has(ai)){ const v=values[ai];
+      if(!(v&&String(v).trim())) return '<a:t></a:t>';
+      // 장번호 배지와 같은 텍스트 상자에 붙어 있으면 한 칸 띄움 ("14.Diff count" → "14. Diff count")
+      const pre = (ai>0 && isSecNo(CAT[src].aTexts[ai-1]||'')) ? ' ' : '';
+      return '<a:t>'+pre+xesc(v)+'</a:t>'; }
     if(/\[[^\]]*\]/.test(inner) && !isImgHint(inner)) return '<a:t>'+xesc(stripBracket(inner))+'</a:t>';
     return m;
   });
@@ -649,16 +823,27 @@ function picXML(id,rid,z,crop){
     +'<p:spPr><a:xfrm><a:off x="'+x+'" y="'+y+'"/><a:ext cx="'+cx+'" cy="'+cy+'"/></a:xfrm>'
     +'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>';
 }
+// 사진을 넣은 슬라이드에서 '안 쓴 이미지 칸'의 도형(회색 박스 + [ 이미지 0N ] 라벨)을 통째로 제거.
+// 사진 2장을 4칸 갤러리에 넣었을 때 빈 칸 2개가 그대로 남는 것을 막기 위함.
+// (사진을 하나도 붙이지 않은 슬라이드는 사용자가 직접 고른 것으로 보고 그대로 둠)
+function dropEmptyImgSlots(xml, src, images){
+  const zs=ZONES[src]; if(!zs) return xml;
+  const used=new Set(Object.keys(images||{}).map(Number)); if(!used.size) return xml;
+  // 사진을 넣은 칸: 회색 박스·라벨이 사진 뒤에 남아 있으면 사진을 옮겼을 때 드러나므로 같이 제거
+  const inside=(p,z)=> p.x>=z[0]-8 && p.y>=z[1]-8 && p.x+p.w<=z[0]+z[2]+8 && p.y+p.h<=z[1]+z[3]+8;
+  return xml.replace(/<p:sp>[\s\S]*?<\/p:sp>/g, sp=>{ const p=spPx(sp); if(!p) return sp;
+    return zs.some(z=>inside(p,z)) ? '' : sp; });
+}
 // 슬라이드에 첨부 이미지 삽입 → {xml, rels} 반환, media는 zip에 직접 추가
 function insertImages(xml, rels, inst, zip, mc){
-  const zs=ZONES[inst.src], imgs=inst.images||{}; if(!zs) return {xml, rels};
+  const cells=instZones(inst), ims=imgList(inst); if(!cells||!ims.length) return {xml, rels};
   let maxId=0; (rels.match(/Id="rId(\d+)"/g)||[]).forEach(s=>{ const n=+s.match(/\d+/)[0]; if(n>maxId)maxId=n; });
   const pics=[], addRels=[];
-  zs.forEach((z,si)=>{ const im=imgs[si]; if(!im)return;
-    const name='imgU'+(++mc.n)+'.png'; zip.file('ppt/media/'+name, im.data.split(',')[1], {base64:true});
+  ims.forEach((im,si)=>{ const c=cells[si]; if(!c) return;
+    const name='imgU'+(++mc.n)+'.'+(im.ext||'png'); zip.file('ppt/media/'+name, im.data.split(',')[1], {base64:true});
     const rid='rId'+(++maxId);
     addRels.push('<Relationship Id="'+rid+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/'+name+'"/>');
-    pics.push(picXML(9000+si, rid, z, coverCrop(im.w,im.h,z[2],z[3])));
+    pics.push(picXML(9000+si, rid, fitRect(c, im.w, im.h), {l:0,t:0,r:0,b:0}));   // 비율 유지·잘라내기 없음
   });
   if(!pics.length) return {xml, rels};
   xml=xml.replace('</p:spTree>', pics.join('')+'</p:spTree>');
@@ -684,6 +869,7 @@ async function genPPT(){
       const hasSec=!!(CAT[inst.src]&&CAT[inst.src].hasSec); if(hasSec) secNo++;
       let xml=fillSlide(origXml[inst.src], inst.src, inst.values, k, M, hasSec?secNo:0);
       xml=fillChart(xml, inst.src, inst.chart);
+      xml=dropEmptyImgSlots(xml, inst.src, inst.images);
       let rels=origRels[inst.src] ? origRels[inst.src].replace(/<Relationship\b[^>]*?notesSlide[^>]*?\/>/g,'')
         : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
       // 도넛: 슬라이드마다 값 반영한 링 이미지를 새로 만들어 rel 연결 (여러 도넛이 값 공유하지 않도록)
@@ -712,7 +898,10 @@ async function genPPT(){
     let ct=await zip.file('[Content_Types].xml').async('string');
     ct=ct.replace(/<Override PartName="\/ppt\/slides\/slide\d+\.xml"[^>]*\/>/g,'').replace(/<Override PartName="\/ppt\/notesSlides\/notesSlide\d+\.xml"[^>]*\/>/g,'');
     const adds=Array.from({length:M},(_,i)=>'<Override PartName="/ppt/slides/slide'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>').join('');
-    if(!/Extension="png"/i.test(ct)) ct=ct.replace(/(<Types[^>]*>)/, '$1<Default Extension="png" ContentType="image/png"/>');
+    // 삽입 사진 확장자별 Default 선언(없으면 PowerPoint가 파일을 열지 못함)
+    [['png','image/png'],['jpeg','image/jpeg'],['jpg','image/jpeg'],['gif','image/gif']].forEach(([e,m])=>{
+      if(!new RegExp('Extension="'+e+'"','i').test(ct)) ct=ct.replace(/(<Types[^>]*>)/, '$1<Default Extension="'+e+'" ContentType="'+m+'"/>');
+    });
     ct=ct.replace('</Types>', adds+'</Types>');
     zip.file('[Content_Types].xml', ct);
     // 다운로드
@@ -726,7 +915,7 @@ async function genPPT(){
 }
 function stamp(){ const d=new Date(),p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; }
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('on'); setTimeout(()=>t.classList.remove('on'),2200); }
-renderDeck(); renderPreview(); aiInit();
+renderDeck(); renderPreview(); aiInit(); setImportMode(IMPORT_MODE);
 initMaster().catch(e=>{ console.error(e); document.getElementById('loading').textContent='마스터 로드 실패: '+e.message; });
 </script>
 </body>
