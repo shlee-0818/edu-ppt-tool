@@ -194,8 +194,14 @@ function areaOf(src){ const zs=ZONES[src]; if(!zs||!zs.length) return null;
   const x1=Math.min.apply(null,zs.map(z=>z[0])), y1=Math.min.apply(null,zs.map(z=>z[1]));
   const x2=Math.max.apply(null,zs.map(z=>z[0]+z[2])), y2=Math.max.apply(null,zs.map(z=>z[1]+z[3]));
   return [x1,y1,x2-x1,y2-y1]; }
-function gridZones(base, n){ if(!base) return []; if(n<=1) return [base.slice()];
-  const cols=(n<=2?1:(n<=4?2:3)), rows=Math.ceil(n/cols), gap=14;
+function gridZones(base, n, ims){ if(!base) return []; if(n<=1) return [base.slice()];
+  // 사진 비율을 보고 열 수를 정한다 — 세로 사진을 위아래로 쌓으면 아주 작아지고, 가로 사진을 옆으로 붙이면 납작해짐
+  const asp=(ims&&ims.length)? (ims.reduce((a,m)=>a+(m.w/Math.max(1,m.h)),0)/ims.length) : 1.4;
+  const wide=asp>=1.25;
+  const cols = n<=2 ? (wide?1:2)
+             : n<=3 ? (wide?1:3)
+             : n<=4 ? 2 : 3;
+  const rows=Math.ceil(n/cols), gap=14;
   const cw=Math.floor((base[2]-gap*(cols-1))/cols), ch=Math.floor((base[3]-gap*(rows-1))/rows);
   const out=[]; for(let i=0;i<n;i++){ const r=Math.floor(i/cols), c=i%cols;
     out.push([base[0]+c*(cw+gap), base[1]+r*(ch+gap), cw, ch]); }
@@ -204,9 +210,8 @@ function imgList(inst){ const im=inst.images||{}; return Object.keys(im).map(Num
 function reindexImages(inst){ const l=imgList(inst); inst.images={}; l.forEach((im,i)=>{ inst.images[i]=im; }); }
 // 화면·PPT가 공유하는 실제 사진 자리
 function instZones(inst){ if(!(ZONES[inst.src]||[]).length) return null;
-  const n=imgList(inst).length;
-  if(!n) return ZONES[inst.src];                       // 사진 없으면 템플릿 원래 칸을 그대로 보여줌
-  return gridZones(areaOf(inst.src), Math.min(n,6)); }
+  const ims=imgList(inst); if(!ims.length) return ZONES[inst.src];   // 사진 없으면 템플릿 원래 칸 그대로
+  return gridZones(areaOf(inst.src), Math.min(ims.length,6), ims); }
 // 첨부 UI에 보여줄 칸 수(항상 한 칸은 여유 — 사진을 더 넣을 수 있게)
 function slotCount(inst){ const base=(ZONES[inst.src]||[]).length; if(!base) return 0;
   return Math.min(6, Math.max(base, imgList(inst).length+1)); }
@@ -823,22 +828,31 @@ function aiInit(){
   m.onchange=()=>localStorage.setItem(aiModelK(aiProvider()),(m.value.trim()||aiDefaults(aiProvider()).model));
 }
 function aiEnabled(){ if(localStorage.getItem(AIO)!=='1') return false; if(AI_PROXY_URL) return true; return (localStorage.getItem(aiKeyK(aiProvider()))||'').trim(); }
+/* 무료 한도는 '모델별'로 걸린다(최신 모델은 하루 요청 수가 특히 적음).
+   한 모델이 한도에 걸리면 다음 무료 모델로 자동 전환해 계속 쓴다. 전부 막히면 그때만 기다린다. */
+const AI_MODELS=['gemini-flash-latest','gemini-3.5-flash','gemini-3.5-flash-lite','gemini-3.1-flash-lite','gemini-flash-lite-latest'];
+let AI_MODEL_I=0;
+function aiModelNow(){ return AI_MODELS[Math.min(AI_MODEL_I, AI_MODELS.length-1)]; }
 async function aiRaw(sys,user){
   if(AI_PROXY_URL){
-    const res=await fetch(AI_PROXY_URL,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({system:sys,user})});
-    if(!res.ok) throw new Error('연결 서버 오류 '+res.status+' '+(await res.text()).slice(0,200));
-    const d=await res.json();
-    if(!d.text){
+    let lastWait=45;
+    for(let i=AI_MODEL_I; i<AI_MODELS.length; i++){
+      const res=await fetch(AI_PROXY_URL,{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({system:sys,user,model:AI_MODELS[i]})});
+      if(!res.ok) throw new Error('연결 서버 오류 '+res.status+' '+(await res.text()).slice(0,200));
+      const d=await res.json();
+      if(d.text) { AI_MODEL_I=i; return d.text; }
       const er=(d.raw&&d.raw.error)||null;
-      // 무료 한도(분당 요청 수)는 잠깐 기다리면 풀린다 → 호출한 쪽이 대기·재시도할 수 있게 남은 시간을 실어 보냄
       if(er && (er.code===429 || er.status==='RESOURCE_EXHAUSTED')){
-        const m=String(er.message||'').match(/retry in ([\d.]+)s/i);
-        const e=new Error('AI 무료 사용 한도(분당 요청 수)를 넘었습니다'); e.retryAfter=m?Math.ceil(+m[1]):45; throw e;
+        const m=String(er.message||'').match(/retry in ([\d.]+)s/i); if(m) lastWait=Math.ceil(+m[1]);
+        console.warn('모델 한도 초과 → 다음 모델로:', AI_MODELS[i]);
+        continue;                                    // 이 모델은 한도 → 다음 모델 시도
       }
       if(er) throw new Error('AI 오류: '+String(er.message||'').slice(0,160));
       console.warn('AI 빈 응답 진단:', JSON.stringify(d.raw||d).slice(0,600));
+      return '';
     }
-    return d.text||'';
+    const e=new Error('AI 무료 사용 한도를 넘었습니다(모델 전부 대기 중)'); e.retryAfter=lastWait; throw e;
   }
   const p=aiProvider(); const key=(localStorage.getItem(aiKeyK(p))||'').trim(); if(!key) throw new Error('API 키를 입력하세요');
   const model=(localStorage.getItem(aiModelK(p))||aiDefaults(p).model).trim();
@@ -856,63 +870,167 @@ async function aiRaw(sys,user){
   if(!res.ok) throw new Error('Anthropic '+res.status+' '+(await res.text()).slice(0,200));
   const d=await res.json(); return (d.content||[]).map(b=>b.text||'').join('');
 }
+/* 각 입력칸이 '무엇을 담는 칸'인지 AI에 알려준다.
+   이걸 안 주면 제목 자리에 제목, 핵심문장 자리에 또 제목을 넣어 한 장에 제목이 두 번 나온다. */
+function fieldRole(ph){ const t=String(ph||'');
+  if(/제목/.test(t))                 return '제목(명사구 18자 이내, 이 장의 주제)';
+  if(/핵심\s*문장|핵심\s*메시지/.test(t)) return '핵심 메시지 — 이 장에서 청중이 가져갈 결론을 서술문 1문장으로. **제목을 다시 쓰거나 제목을 바꿔 쓴 문구를 넣으면 안 됨**';
+  if(/상세\s*설명|설명\s*문구|설명을/.test(t)) return '근거·조건·수치·주의사항을 \\n으로 2~4줄';
+  if(/항목명/.test(t))               return '짧은 항목명(10자 이내)';
+  if(/단계명/.test(t))               return '단계 이름(4~12자)';
+  if(/한 줄|정리하세요/.test(t))      return '한 줄 요약(40자 이내)';
+  if(/내용/.test(t))                 return '한 줄 설명(40자 이내)';
+  if(/YYYY|날짜/.test(t))            return '날짜';
+  if(/부서/.test(t))                 return '부서명';
+  if(/발표자|성명/.test(t))          return '발표자';
+  if(/출처|저자|연도/.test(t))       return '출처';
+  return '';
+}
 function buildCatalog(){
   return Object.keys(CAT).map(Number).sort((a,b)=>a-b).map(id=>{
-    const c=CAT[id]; const o={id, name:c.label, use:USE[id]||c.label, fields:c.fields.map((f,ord)=>({ord,label:f.label}))};
+    const c=CAT[id]; const o={id, name:c.label, use:USE[id]||c.label,
+      fields:c.fields.map((f,ord)=>{ const r=fieldRole(f.ph); return r?{ord,is:r}:{ord,label:f.label}; })};
     if(CHARTS[id]) o.chart={items:CHARTS[id].n, unit:CHARTS[id].unit||''};
     return o;
   });
 }
 // AI에 보내는 문서 요약본 — 사진은 '몇 장 있는지'만 보냄(그림 데이터는 전송하지 않음)
 function aiPayload(items, off){ return items.map((it,i)=>({idx:(off||0)+i, title:it.title||'', bullets:(it.bullets||[]).slice(0,30), images:(it.images||[]).length})); }
+/* 응답이 잘리거나 한 글자 깨져도 전체를 버리지 않는다 —
+   통째로 파싱해 보고, 실패하면 중괄호 짝을 세어 '온전한 슬라이드 객체'만 골라 살린다. */
 function parseSlides(txt){
-  const m=String(txt||'').match(/\{[\s\S]*\}/);
-  if(!m) throw new Error('AI 응답이 비었거나 잘렸습니다'+(txt?(': '+String(txt).slice(0,80)):''));
-  return (JSON.parse(m[0]).slides)||[];
+  const s=String(txt||'');
+  const m=s.match(/\{[\s\S]*\}/);
+  if(m){ try{ const o=JSON.parse(m[0]); if(o && o.slides) return o.slides; }catch(_){} }
+  const out=[]; const k=s.indexOf('"slides"');
+  let i=(k>=0? s.indexOf('[',k) : s.indexOf('['));
+  while(i>=0 && i<s.length){
+    const st=s.indexOf('{', i); if(st<0) break;
+    let d=0, j=st, inStr=false, esc=false, closed=false;
+    for(; j<s.length; j++){ const c=s[j];
+      if(inStr){ if(esc) esc=false; else if(c==='\\') esc=true; else if(c==='"') inStr=false; continue; }
+      if(c==='"') inStr=true;
+      else if(c==='{') d++;
+      else if(c==='}'){ d--; if(d===0){ j++; closed=true; break; } }
+    }
+    if(!closed) break;                                  // 마지막 객체가 잘린 지점
+    try{ const o=JSON.parse(s.slice(st,j)); if(o && o.src!=null) out.push(o); }catch(_){}
+    i=j;
+  }
+  if(!out.length) throw new Error('AI 응답을 읽지 못했습니다'+(s?(': '+s.slice(0,80)):''));
+  return out;
+}
+// 무료 한도(429)에 걸리면 남은 초를 보여주며 기다렸다 다시 요청
+async function aiRawRetry(sys, user, note){
+  const fb=document.getElementById('fileBar');
+  for(let t=0;t<5;t++){
+    try{ return await aiRaw(sys,user); }
+    catch(e){
+      if(!(e&&e.retryAfter) || t>=4) throw e;
+      let left=Math.min(70, e.retryAfter+2);
+      while(left>0){ if(fb) fb.textContent='⏳ AI 무료 한도에 걸려 '+left+'초 대기 중…'+(note?(' ('+note+')'):'');
+        await new Promise(r=>setTimeout(r,1000)); left--; }
+    }
+  }
+  throw new Error('AI 요청 실패');
+}
+
+/* ===== 1단계: 문서 전체를 먼저 파악한다 =====
+   토막내서 각 항목만 보고 템플릿을 고르면 자료 성격과 안 맞고 장 제목이 제각각·중복된다.
+   먼저 "이게 어떤 자료이고 어떤 장으로 묶이는지"를 만들고, 그 계획을 2단계 각 묶음에 함께 넘긴다. */
+async function aiAnalyze(items){
+  const sys="당신은 기업 교육 교안 설계자입니다. 아래 문서 전체를 먼저 파악해 교안 설계 계획을 세우세요.\n"
+   +"출력은 오직 JSON 하나: {\"docType\":\"실무 절차 매뉴얼 | 규정·지침 | 판독·사례 교육 | 현황 보고 | 기타\","
+   +"\"subject\":\"자료 주제 한 줄\",\"audience\":\"교육 대상\",\"style\":\"이 자료에 어울리는 표현 톤 한 줄\","
+   +"\"templatePlan\":\"주로 어떤 템플릿을 써야 하는지 한 줄(예: 단계 절차가 중심이므로 가로·세로 흐름과 번호목록 위주)\","
+   +"\"outline\":[{\"no\":1,\"title\":\"장 제목(15자 이내)\",\"idx\":[이 장에 들어가는 원본 항목 번호들]}]}\n"
+   +"outline은 4~6개로 묶고, 모든 원본 항목이 반드시 어느 장에든 들어가야 합니다. 원본의 큰 흐름(번호가 붙은 절)을 최대한 따르세요.";
+  const user="문서 항목("+items.length+"개):\n"+JSON.stringify(items.map((it,i)=>({idx:i, title:it.title||'',
+      head:(it.bullets||[]).slice(0,4), images:(it.images||[]).length})))+"\n\nJSON만 출력하세요.";
+  const txt=await aiRawRetry(sys,user,'문서 분석');
+  const m=String(txt||'').match(/\{[\s\S]*\}/); if(!m) throw new Error('분석 응답을 읽지 못했습니다');
+  return JSON.parse(m[0]);
+}
+function planText(plan){
+  if(!plan) return '';
+  return "[이 문서의 성격]\n자료 종류: "+(plan.docType||'')+" / 주제: "+(plan.subject||'')+" / 대상: "+(plan.audience||'')
+    +"\n표현 톤: "+(plan.style||'')+"\n템플릿 방향: "+(plan.templatePlan||'')
+    +"\n장 구성: "+((plan.outline||[]).map(o=>(o.no||'')+') '+(o.title||'')+' [항목 '+((o.idx||[]).join(','))+']').join(' / '))
+    +"\n→ 각 슬라이드 제목은 위 장 구성과 일관되게 쓰고, **같은 제목을 여러 장에 반복하지 말고** 하위 주제로 구분하세요.\n";
+}
+// 목차는 분석 결과로 직접 만든다(AI가 묶음마다 다르게 만드는 것을 막음)
+function tocSlide(plan){
+  const ol=(plan&&plan.outline)||[]; if(ol.length<2) return null;
+  const m={}; ol.slice(0,6).forEach((o,i)=>{ m[i]=String(o.title||'').trim(); });
+  return {src:4, values:byField(4,m), images:{}};
 }
 // 원본 1장 → 교안 1장 유지 모드
 async function aiConvertKeep(items){
   const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 기존 교육자료를 '새 마스터 템플릿'으로 옮기는 작업을 합니다.\n"
    +"규칙:\n1) **문서 항목(원본 슬라이드/절) 1개당 슬라이드 1장**이 기본이며, 한 항목이 구조(절차·비교)와 사진을 함께 담고 있으면 그 항목만 2장으로 나눠도 됩니다. 원본 순서는 유지하고 항목을 합치거나 빼지 마세요.\n"
    +"2) 각 슬라이드에 그 원본 항목 번호 \"idx\"를 반드시 넣으세요.\n"
-   +"3) 맨 앞에 표지(id 1~3 중 하나)를 1장, 그 다음 목차(id 4)를 1장 추가할 수 있습니다(추가한 이 2장은 idx를 null).\n"
+   +"3) 첫 묶음이면 맨 앞에 표지(id 1~3 중 하나) 1장만 추가하세요(idx는 null). **목차는 만들지 마세요**(도구가 만듭니다).\n"
    +"4) 사진(images≥1) 있는 항목은 **기본이 id 9(본문+이미지) 한 장**입니다 — 제목·핵심문장·설명을 채우면 사진은 도구가 옆에 배치합니다.\n"
-   +"   절차·비교 항목이 4개 이상으로 뚜렷해서 구조 템플릿이 훨씬 나을 때만 2장으로 나누고, **그때 두 번째 장도 id 9로 만들고 제목·핵심문장·설명을 반드시 채우세요.** 텍스트가 빈 슬라이드는 절대 만들지 마세요.\n"
+   +"   절차·비교 항목이 4개 이상으로 뚜렷해서 구조 템플릿이 훨씬 나을 때만 2장으로 나누되 **이 묶음에서 최대 1곳까지만**(원본 장수를 지키는 게 우선). 나눌 때 두 번째 장도 제목·핵심문장·설명을 반드시 채우고, 텍스트가 빈 슬라이드는 절대 만들지 마세요.\n"
    +"5) 내용 성격에 맞는 템플릿을 고르세요: 절차/단계→14·15·16, 순서 있는 점검항목→11, 비교→17/18, 수치·비율→19~21·12, 한 문장 핵심→13, 3~4개 나열→7·10, 서술 설명→8, 큰 주제 전환→5/6, 마무리→31.\n"
    +"   **사진이 있어도 내용이 절차·비교·체크리스트라면 그 구조 템플릿을 쓰세요.** 그때는 사진 슬라이드가 바로 뒤에 자동으로 하나 더 생깁니다(한 항목당 최대 2장 허용).\n"
    +"6) **이건 발표용 교육자료입니다. 원본 문장을 그대로 옮기지 마세요.** 설명·본문 칸은 반드시 **줄바꿈 문자 \\n 으로 2~4줄로 나눠서** 넣으세요(한 줄에 한 메시지, 45자 이내). 한 칸에 긴 문장을 이어 붙이면 실패로 봅니다. 명사형·개조식으로 다듬고 군더더기(‘~한다’ 반복, 중복 설명)를 걷어내세요.\n"
    +"   단, **검사명·수치·기준값·시약명·장비명·단위는 절대 바꾸거나 빼지 마세요**(교육자료 정확성). 원본에 ※·중요·주의 표시가 붙은 내용은 반드시 살리고 문장 앞에 '※'를 유지하세요.\n"
    +"   작성자 메모·날짜·사번·이름 같은 잡음은 제외하세요. 원본 제목이 없으면 본문을 보고 짧은 소제목을 지어 넣으세요.\n"
    +"7) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n"
+   +"8) **각 칸은 템플릿 목록의 fields[].is(그 칸이 담아야 하는 것)를 지켜 채우세요.** 특히 제목 칸과 핵심 메시지 칸에 같은 말을 두 번 쓰면 안 됩니다 —\n"
+   +"   제목은 '무엇에 대한 장'인지(명사구), 핵심 메시지는 '그래서 무엇을 해야/알아야 하는지'를 서술문 한 문장으로 씁니다.\n"
    +"출력은 오직 JSON 하나만: {\"slides\":[{\"src\":번호,\"idx\":원본항목번호 또는 null,\"fields\":{\"0\":\"..\"},\"chart\":{\"labels\":[],\"values\":[]}}]}";
   // 항목이 많으면 한 번에 다 만들다 응답이 잘린다(출력 토큰 한도) → 8개씩 나눠 요청하고 이어 붙임.
   // 한 묶음이 실패해도 그 묶음만 규칙 기반으로 떨어지게 해서 전체가 날아가지 않도록 함.
-  const B=8, all=[], cat=JSON.stringify(buildCatalog()), fb=document.getElementById('fileBar');
+  const fb=document.getElementById('fileBar');
+  // 1단계: 문서 전체 파악 (실패해도 2단계는 진행)
+  let plan=null;
+  if(fb) fb.textContent='🤖 문서 전체를 읽고 자료 성격·장 구성을 파악하는 중…';
+  try{ plan=await aiAnalyze(items); }catch(e){ console.warn('문서 분석 건너뜀:', e&&e.message); }
+  const pt=planText(plan);
+  // 2단계: 항목이 많으면 한 번에 다 만들다 응답이 잘리므로 8개씩 나눠 요청하고 이어 붙임.
+  //         한 묶음이 실패해도 그 묶음만 규칙 기반으로 떨어지게 해서 전체가 날아가지 않도록 함.
+  // 한 번에 많이 만들면 응답이 잘려 항목이 조용히 빠진다 → 6개씩 요청하고,
+  // 빠진 항목이 있으면 그 항목만 다시 요청한다(규칙 폴백은 정말 안 될 때만).
+  const B=6, all=[], cat=JSON.stringify(buildCatalog());
+  const ask=async (subset, wantCover, note)=>{
+    const user=pt+"\n템플릿 목록:\n"+cat
+      +"\n\n지금 만들 문서 항목("+subset.length+"개, idx는 원본 번호 그대로 유지):\n"
+      +JSON.stringify(subset.map(p=>aiPayload([p.it],p.idx)[0]))
+      +(wantCover?"\n\n맨 앞에 표지 1장만 추가하세요(idx는 null). 목차는 만들지 마세요."
+                 :"\n\n이건 이어지는 부분입니다. 표지·목차는 만들지 마세요.")
+      +"\n\n반드시 위 idx 전부에 대해 슬라이드를 만드세요. JSON만 출력하세요.";
+    try{ return parseSlides(await aiRawRetry(sys, user, note)); }
+    catch(e){ console.error('AI 요청 실패', e); return null; }
+  };
   for(let s=0; s<items.length; s+=B){
-    const chunk=items.slice(s,s+B), first=(s===0);
-    if(fb) fb.textContent='🤖 AI 변환 중… '+Math.min(s+B,items.length)+'/'+items.length+' 항목';
-    const user="템플릿 목록:\n"+cat
-      +"\n\n문서 항목("+chunk.length+"개, idx는 원본 번호 그대로 유지):\n"+JSON.stringify(aiPayload(chunk,s))
-      +(first?"\n\n맨 앞에 표지 1장과 목차 1장을 추가하세요(idx는 null)."
-             :"\n\n이건 이어지는 부분입니다. 표지·목차는 만들지 마세요.")
-      +"\n\nJSON만 출력하세요.";
-    let got=null;
-    for(let tryN=0; tryN<3 && !got; tryN++){
-      try{ got=parseSlides(await aiRaw(sys,user)); }
-      catch(e){
-        if(e && e.retryAfter && tryN<2){        // 무료 한도 → 안내하고 기다렸다 다시
-          let left=Math.min(70, e.retryAfter+2);
-          while(left>0){ if(fb) fb.textContent='⏳ AI 무료 한도에 걸려 '+left+'초 대기 중… ('+Math.min(s+B,items.length)+'/'+items.length+' 항목)';
-            await new Promise(r=>setTimeout(r,1000)); left--; }
-          continue;
-        }
-        if(tryN>=1) console.error('AI 묶음 실패 → 규칙 기반으로 대체', e);
-      }
+    let pending=items.slice(s,s+B).map((it,i)=>({it, idx:s+i}));
+    const note=Math.min(s+B,items.length)+'/'+items.length+' 항목';
+    for(let round=0; pending.length && round<3; round++){
+      if(fb) fb.textContent='🤖 AI 변환 중… '+note+(plan&&plan.docType?(' · '+plan.docType):'')
+        +(round?(' · 빠진 '+pending.length+'개 다시 요청'):'');
+      const got=await ask(pending, s===0&&round===0, note);
+      if(!got) break;
+      all.push.apply(all, got);
+      const done={}; got.forEach(g=>{ if(g.idx!=null) done[+g.idx]=1; });
+      pending=pending.filter(p=>!done[p.idx]);
     }
-    if(got) all.push.apply(all, got);
-    else chunk.forEach((it,i)=>{ const mp=mapItem(it); all.push({src:mp.src, idx:s+i, fields:ordsOf(mp)}); });
+    pending.forEach(p=>{ const mp=mapItem(p.it); all.push({src:mp.src, idx:p.idx, fields:ordsOf(mp)}); });
   }
   if(!all.length) throw new Error('AI가 구성을 만들지 못했습니다');
+  // 응답이 잘려 일부 항목이 빠질 수 있다 → 빠진 항목은 규칙 기반으로 채워 원본 내용을 잃지 않게 하고 원본 순서로 정렬
+  const have={}; all.forEach(s=>{ if(s.idx!=null) have[+s.idx]=1; });
+  let filled=0;
+  items.forEach((it,ix)=>{ if(have[ix]) return; const mp=mapItem(it);
+    all.push({src:mp.src, idx:ix, fields:ordsOf(mp)}); filled++; });
+  if(filled){ console.warn('AI가 다루지 않은 항목 '+filled+'개는 규칙 기반으로 채웠습니다');
+    if(fb) fb.dataset.partial=filled; }
+  all.sort((a,b)=>((a.idx==null?-1:+a.idx)-(b.idx==null?-1:+b.idx)));
+  // 목차는 분석한 장 구성으로 직접 만들어 표지 다음에 끼운다
+  const toc=tocSlide(plan);
+  if(toc){ const at=(all[0]&&+all[0].src<=3)?1:0;
+    all.splice(at,0,{src:4, idx:null, fields:ordsOf({src:4, values:toc.values})}); }
   return all;
 }
 // 규칙 기반 결과({values:{fieldIndex:v}})를 AI 응답 형식({fields:{ord:v}})으로 되돌림
@@ -946,10 +1064,14 @@ function deckFromPlan(slides, items){
     const ims=(it.images||[]); if(!ims.length) return;
     const group=out.filter(b=>b.__idx===ix); if(!group.length) return;
     let target=group.filter(b=>zoneCount(b.src)>0)[0];
-    if(!target){ const last=group[group.length-1];
-      const ttl=(it.title||Object.values(last.values)[0]||'');
-      const lead=tidyLines(it.bullets,1)[0]||'';                    // 빈 슬라이드가 되지 않게 최소한 한 줄은 채움
-      target={src:9, values:fillOrds(9,[ttl, lead, tidyLines((it.bullets||[]).slice(1),3).join('\n')]), images:{}, __idx:ix};
+    if(!target){
+      // 구조 템플릿(사진 자리 없음)을 골랐으면 바로 뒤에 '사진 장'을 만든다.
+      // 갤러리(25)는 입력칸이 제목 하나뿐이라 사진 전용 장에 맞고, 제목은 **AI가 다듬은 제목**을 그대로 쓴다
+      // (원본 제목을 쓰면 "3. Cell count" 같은 원문이 새 교안에 섞여 들어감).
+      const last=group[group.length-1];
+      const lf=CAT[last.src].fields[0];
+      const ttl=String((lf?last.values[lf.i]:'')||it.title||'').trim();
+      target={src:25, values:byField(25,{0:ttl}), images:{}, __idx:ix};
       out.splice(out.indexOf(last)+1, 0, target); }
     attachImages(target, ims);
   });
