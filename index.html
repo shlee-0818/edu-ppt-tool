@@ -311,6 +311,15 @@ function fillChart(xml, src, chart){
   return xml;
 }
 
+/* 마스터 원본은 본문 설명이 11~12pt로 강의실 투사에서 작다 → 단계별로 키운다.
+   PPTX(sz, 1/100pt)와 미리보기(HTML px = pt×1.4)에 같은 배율을 적용해 화면과 결과물을 일치시킴.
+   라벨·페이지번호(10pt)는 디자인 요소라 그대로 둔다. */
+function fontFactor(pt){ if(pt<=10) return 1; if(pt<=11) return 1.30; if(pt<=12) return 1.25;
+  if(pt<=16) return 1.15; if(pt<=21) return 1.10; return 1.05; }
+function bumpFontsXml(xml){ return xml.replace(/sz="(\d+)"/g,(m,v)=>{ const pt=+v/100, f=fontFactor(pt);
+  return f===1? m : ('sz="'+Math.round(pt*f)*100+'"'); }); }
+function bumpFontsHtml(html){ return html.replace(/font-size:\s*(\d+(?:\.\d+)?)px/g,(m,v)=>{ const px=+v, f=fontFactor(px/1.4);
+  return f===1? m : ('font-size:'+Math.round(px*f)+'px'); }); }
 function xesc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function isPageNo(t){ return /^\s*\d+\s*\/\s*\d+\s*$/.test(t); }
 function isSecNo(t){ return /^\s*\d{1,2}\s*\.\s*$/.test(t); }   // 장번호 배지 "01."
@@ -422,17 +431,31 @@ function xescH(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</
 // 덱 순서 기준 장번호(다운로드 PPT와 동일하게 매김)
 function secNoAt(k){ let n=0; for(let i=0;i<=k;i++){ const c=CAT[DECK[i].src]; if(c&&c.hasSec) n++; } return (CAT[DECK[k].src]||{}).hasSec? n : 0; }
 function previewHTML(src, values, secNo){
-  let html=(SLIDES[src]||'<div style="padding:80px;font-size:40px;color:#bbb">미리보기 없음</div>').replace(/\.\.\/assets\/foundation-symbol\.png/g, SYMBOL_PNG);
+  let html=bumpFontsHtml(SLIDES[src]||'<div style="padding:80px;font-size:40px;color:#bbb">미리보기 없음</div>').replace(/\.\.\/assets\/foundation-symbol\.png/g, SYMBOL_PNG);
   if(secNo) html=html.replace(/>(\s*\d{1,2}\s*\.\s*)</, '>'+String(secNo).padStart(2,'0')+'.<');
   // 입력칸을 그 자리에서 고칠 수 있게 감싼다(빈 칸은 회색 안내문 상태로 두고, 클릭하면 지워짐)
   (CAT[src]&&CAT[src].fields||[]).forEach(f=>{
     const idx=html.indexOf(f.ph); if(idx<0) return;
     const v=values[f.i], has=!!(v&&String(v).trim());
-    const shown=has? xescH(v).replace(/\r?\n/g,'<br>') : xescH(f.ph);
+    const shown=has? String(v).split(/\r?\n/).map(marksToHtml).join('<br>') : xescH(f.ph);
     html=html.slice(0,idx)+'<span class="pvf'+(has?'':' pvph')+'" data-fi="'+f.i+'" contenteditable="true" spellcheck="false">'+shown+'</span>'+html.slice(idx+f.ph.length);
   });
   return html;
 }
+// 미리보기에서도 강조가 보이게(그리고 고쳐도 강조가 사라지지 않게) 마커 ↔ HTML 상호 변환
+function marksToHtml(t){ return markSegs(t).map(s=>{ let x=xescH(s.t);
+  if(s.bold) x='<b style="color:#C8102E">'+x+'</b>';
+  if(s.hl) x='<mark style="background:#FFF200;color:inherit">'+x+'</mark>';
+  return x; }).join('') || xescH(t); }
+function htmlToMarks(el){ let out='';
+  [].forEach.call(el.childNodes, n=>{
+    if(n.nodeType===3){ out+=n.nodeValue; return; }
+    const tag=(n.nodeName||'').toLowerCase(), inner=n.textContent||'';
+    if(tag==='br'){ out+='\n'; return; }
+    if(tag==='mark') out+='=='+(n.querySelector&&n.querySelector('b')?('**'+inner+'**'):inner)+'==';
+    else if(tag==='b'||tag==='strong') out+='**'+inner+'**';
+    else out+=inner; });
+  return out; }
 function syncCardField(k,fi){ const card=document.querySelectorAll('#deck .card')[k]; if(!card)return;
   const el=card.querySelector('[data-fi="'+fi+'"]'); if(el) el.value=(DECK[k].values[fi]!=null?DECK[k].values[fi]:''); }
 // 미리보기에서 직접 고친 내용을 덱에 반영
@@ -440,7 +463,7 @@ function bindPreviewEdit(){
   document.querySelectorAll('#pvstage .pvf').forEach(el=>{
     el.addEventListener('focus',()=>{ if(el.classList.contains('pvph')){ el.textContent=''; el.classList.remove('pvph'); } });
     el.addEventListener('input',()=>{ const inst=DECK[SEL]; if(!inst)return; const fi=+el.dataset.fi;
-      inst.values[fi]=el.innerText.replace(/ /g,' ').replace(/\n{3,}/g,'\n\n').trim(); syncCardField(SEL,fi); });
+      inst.values[fi]=htmlToMarks(el).replace(/ /g,' ').replace(/\n{3,}/g,'\n\n').trim(); syncCardField(SEL,fi); });
     el.addEventListener('blur',()=>{ const inst=DECK[SEL]; if(!inst)return;
       if(!String(inst.values[+el.dataset.fi]||'').trim()){ renderPreview(); } else renderDeck(); });
     el.addEventListener('keydown',e=>{ if(e.key==='Escape') el.blur(); });
@@ -651,6 +674,117 @@ async function compositeAnnots(im, pic, annots){
   return {data:cv.toDataURL('image/png'), w:im.w, h:im.h, ext:'png'};
 }
 function isJustNum(s){ return /^\s*\d{1,3}\s*$/.test(String(s)); }
+
+/* ===== 원본의 강조를 마커로 보존 =====
+   담당자가 원본에 넣어둔 노란 형광·보강 글자색·굵게가 그동안 전부 사라져, 통합 교안을 받아도
+   강조를 다시 넣어야 했다. 런 단위 서식을 ==형광== / **강조** 마커로 텍스트에 심어 두고
+   (AI에게도 마커를 유지하라고 지시) PPT를 만들 때 실제 서식으로 되돌린다. */
+function isVividColor(hex){ if(!hex) return false;
+  const n=parseInt(hex,16), r=n>>16&255, g=n>>8&255, b=n&255;
+  return (Math.max(r,g,b)-Math.min(r,g,b))>=25; }        // 회색·검정·흰색은 강조로 보지 않음
+function paraWithMarks(p){
+  const segs=[];
+  [].forEach.call(p.childNodes, node=>{
+    const nm=node.nodeName;
+    if(nm==='a:br'){ segs.push({t:' ', bold:false, hl:false}); return; }
+    if(nm!=='a:r' && nm!=='a:fld') return;
+    const tt=[].map.call(node.getElementsByTagName('a:t'), x=>x.textContent).join('');
+    if(!tt) return;
+    let bold=false, hl=false;
+    const rPr=node.getElementsByTagName('a:rPr')[0];
+    if(rPr && nm==='a:r'){
+      bold = rPr.getAttribute('b')==='1';
+      const sf=rPr.getElementsByTagName('a:solidFill')[0];
+      if(sf){ const c=sf.getElementsByTagName('a:srgbClr')[0];
+        if(c && isVividColor(c.getAttribute('val'))) bold=true; }        // 보강 글자색 → 강조로 취급
+      hl = !!rPr.getElementsByTagName('a:highlight')[0];
+    }
+    const last=segs[segs.length-1];
+    if(last && last.bold===bold && last.hl===hl) last.t+=tt;             // 같은 서식이 여러 런으로 쪼개진 경우 합침
+    else segs.push({t:tt, bold, hl});
+  });
+  let out='';
+  segs.forEach(s=>{
+    const raw=s.t;
+    if(!raw.trim()){ out+=raw; return; }
+    if(/\*\*|==/.test(raw)){ out+=raw; return; }        // 원문에 이미 ** 나 == 이 있으면 마커와 헷갈리므로 그대로
+    const core=(s.bold? '**'+raw.trim()+'**' : raw.trim());
+    out += (s.hl? '=='+core+'==' : core) + (/\s$/.test(raw)?' ':'');
+  });
+  return out.replace(/\s+/g,' ').trim();
+}
+// 마커가 들어간 문장 → 조각들 [{t, bold, hl}]
+function markSegs(text){
+  const s=String(text||''), out=[]; let i=0;
+  const re=/==([\s\S]*?)==|\*\*([\s\S]*?)\*\*/g; let m;
+  while((m=re.exec(s))){
+    if(m.index>i) out.push({t:s.slice(i,m.index), bold:false, hl:false});
+    if(m[1]!=null){ const inner=m[1]; const b=/\*\*/.test(inner);
+      out.push({t:inner.replace(/\*\*/g,''), bold:b, hl:true}); }
+    else out.push({t:m[2], bold:true, hl:false});
+    i=re.lastIndex;
+  }
+  if(i<s.length) out.push({t:s.slice(i), bold:false, hl:false});
+  return out.filter(x=>x.t!=='');
+}
+function stripMarks(t){ return String(t||'').replace(/==|\*\*/g,''); }
+// 원본 슬라이드의 표 개체 → 행/열 그대로 (표가 있으면 표 템플릿을 쓰는 게 자명한데 그동안 이 정보를 안 봤음)
+function pptxTables(xml){ const out=[];
+  (xml.match(/<a:tbl>[\s\S]*?<\/a:tbl>/g)||[]).forEach(tb=>{
+    const rows=[];
+    (tb.match(/<a:tr[\s\S]*?<\/a:tr>/g)||[]).forEach(tr=>{
+      const cells=(tr.match(/<a:tc>[\s\S]*?<\/a:tc>/g)||[]).map(tc=>
+        (tc.match(/<a:t>[\s\S]*?<\/a:t>/g)||[]).map(s=>s.replace(/<\/?a:t>/g,'')).join(' ').replace(/\s+/g,' ').trim());
+      if(cells.filter(Boolean).length) rows.push(cells); });
+    if(rows.length>=2) out.push(rows); });
+  return out; }
+
+/* ===== 내용의 '모양'을 코드로 판정해 템플릿을 정한다 =====
+   템플릿 선택을 AI에 맡기면 매번 달라지고 원본이 가진 구조 신호(번호 매김·표·비교·수치)를 놓친다.
+   구조는 코드가 정하고, AI는 정해진 칸에 들어갈 문장만 다듬는다. */
+const NUM_PAT=/^\s*(\(?\d{1,2}\s*[).]|[①-⑳]|[가-하]\s*[).]|\d{1,2}\s*단계|step\s*\d)/i;
+const CMP_PAT=/\bvs\b|대비|비교|국내|국외|이전|이후|전후|장점|단점|차이/i;
+function analyzeShape(it){
+  const b=(it.bullets||[]).map(s=>stripMarks(String(s)).trim()).filter(Boolean);   // 판정은 마커를 뗀 원문으로
+  const chars=b.join('').length+String(it.title||'').length;
+  const numbered=b.filter(s=>NUM_PAT.test(s)).length;
+  const pct=b.filter(s=>/\d+(\.\d+)?\s*%/.test(s)).length;
+  const table=(it.tables&&it.tables.length)?it.tables[0]:null;
+  let kind='narrative', n=b.length;
+  if(table){ kind='table'; n=table.length; }
+  else if(numbered>=3){ kind='steps'; n=numbered; }
+  else if(pct>=3){ kind='numbers'; n=pct; }
+  else if(CMP_PAT.test(b.join(' ')+' '+(it.title||'')) && b.length>=4){ kind='compare'; }
+  else if(b.length>=3){ kind='list'; }
+  else if(b.length<=1 && chars<=90){ kind='quote'; }
+  return {kind, n, chars, images:(it.images||[]).length, table};
+}
+// 템플릿이 담을 수 있는 글자 수(대략) — 내용이 많으면 칸이 많은 템플릿으로 올린다(쪼개지 않고 레이아웃으로 담기)
+function fieldBudget(ph){ const r=fieldRole(ph);
+  if(/제목/.test(r)) return 22;
+  if(/2~4줄/.test(r)) return 170;      // 줄바꿈으로 여러 줄 들어가는 설명 칸
+  if(/핵심 메시지/.test(r)) return 50;
+  return 45; }
+function templateCapacity(id){ const f=(CAT[id]&&CAT[id].fields)||[];
+  return f.reduce((a,x)=>a+fieldBudget(x.ph), 0); }
+function pickTemplate(sh){
+  let cands;
+  switch(sh.kind){
+    case 'table':   cands=[17,18,11,8]; break;
+    case 'steps':   cands=[(sh.n<=4?14:(sh.n===5?15:16)),11,16,8]; break;
+    case 'numbers': cands=[(sh.n<=4?21:19),20,12,8]; break;
+    case 'compare': cands=[18,17,7,8]; break;
+    case 'list':    cands=[(sh.n<=3?7:(sh.n<=4?10:11)),11,17,8]; break;
+    case 'quote':   cands=[13,8]; break;
+    default:        cands=[8,7,11,17];
+  }
+  let chosen=null;
+  for(const id of cands){ if(CAT[id] && templateCapacity(id) >= sh.chars*0.5){ chosen=id; break; } }
+  if(!chosen) chosen=cands.filter(id=>CAT[id]).sort((a,b)=>templateCapacity(b)-templateCapacity(a))[0] || 8;
+  // 사진이 있는데 고른 템플릿에 사진 자리가 없고, 내용이 9번에 들어갈 분량이면 사진+설명을 한 장에
+  if(sh.images && !zoneCount(chosen) && sh.chars <= templateCapacity(9)*1.15) return 9;
+  return chosen;
+}
 // 슬라이드 1장 → {제목, 불릿, 이미지들}. 제목은 ①제목 자리표시 ②가장 큰 글자 ③첫 줄 순서로 판정
 // (원본 첫 줄이 페이지번호인 자료가 많아 '첫 줄=제목'만으로는 번호가 제목이 됨)
 async function pptxSlideItem(zip, n, num){
@@ -661,23 +795,25 @@ async function pptxSlideItem(zip, n, num){
     const ph=sp.getElementsByTagName('p:ph')[0];
     const phType=ph?(ph.getAttribute('type')||'body'):'';
     [...sp.getElementsByTagName('a:p')].forEach(p=>{
-      const t=[...p.getElementsByTagName('a:t')].map(x=>x.textContent).join('').replace(/\s+/g,' ').trim();
+      const t=paraWithMarks(p);
       if(!t) return;
       let sz=0; [...p.getElementsByTagName('a:rPr')].forEach(r=>{ const s=+(r.getAttribute('sz')||0); if(s>sz)sz=s; });
       paras.push({t, sz, ph:phType});
     });
   });
-  const body=paras.filter(p=>!isJustNum(p.t));
+  const body=paras.filter(p=>!isJustNum(stripMarks(p.t)));
   let title='';
   const phT=body.find(p=>p.ph==='title'||p.ph==='ctrTitle');
   if(phT) title=phT.t;
   else { const mx=body.reduce((a,p)=>Math.max(a,p.sz),0);
          const big=mx?body.find(p=>p.sz===mx):null; title=big?big.t:(body[0]?body[0].t:''); }
+  title=stripMarks(title);                       // 제목에는 강조 마커를 남기지 않음
   let used=false;
-  const bullets=body.filter(p=>{ if(!used && p.t===title){ used=true; return false; } return true; }).map(p=>p.t);
+  const bullets=body.filter(p=>{ if(!used && stripMarks(p.t)===title){ used=true; return false; } return true; }).map(p=>p.t);
   const rf=zip.file('ppt/slides/_rels/slide'+num+'.xml.rels');
   const map=rf?relImageMap(await rf.async('string'),'ppt/'):{};
   // 사진마다 위치를 알아야 그 위에 얹힌 표시 도형을 찾아 합성할 수 있다
+  const tables=pptxTables(xml);
   const pics=pptxPictures(xml), annots=pptxAnnots(xml), images=[], seen={};
   for(const p of pics){
     if(images.length>=6) break;
@@ -686,7 +822,7 @@ async function pptxSlideItem(zip, n, num){
     let fin=base; if(p.w&&p.h){ try{ fin=await compositeAnnots(base, p, annots); }catch(_){} }
     images.push(fin);
   }
-  return {title, bullets, image:images.length>0, images};
+  return {title, bullets, image:images.length>0, images, tables};
 }
 async function parsePptxItems(ab){ const zip=await JSZip.loadAsync(ab);
   const ns=Object.keys(zip.files).filter(n=>/^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a,b)=>(+a.match(/slide(\d+)/)[1])-(+b.match(/slide(\d+)/)[1]));
@@ -754,15 +890,16 @@ function tidyLines(arr, max){
   });
   return out.slice(0, max||5);
 }
-// 한 항목(제목+불릿) → 성격에 맞는 템플릿 선택
-function mapItem(it){ const t=it.title||'', b=tidyLines(it.bullets,8); const ims=(it.images||[]);
-  if(ims.length){ const src=imgTemplate(ims.length);
-    // 9번 입력칸은 [핵심문장, 상세설명] — 첫 줄을 핵심으로, 나머지는 줄바꿈으로 나눠 설명 칸에
-    return attachImages({src, values:fillOrds(src,[b[0]||t, tidyLines(b.slice(1),5).join('\n')]), images:{}}, ims); }
-  if(!b.length) return {src:5, values:byField(5,{0:t})};                                   // 제목만 → 챕터
-  if(b.length<=2) return {src:8, values:byField(8,{0:t,1:b[0]||'',2:b.slice(1).join('\n')})}; // 1~2줄 → 본문 요약
-  if(b.length<=4) return {src:10, values:byField(10,{0:t,1:b[0]||'',3:b[1]||'',5:b[2]||'',7:b[3]||''})}; // 3~4개 → 4카드
-  return {src:8, values:byField(8,{0:t,3:b[0]||'',4:b[1]||'',5:b[2]||'',6:b[3]||'',2:b.slice(4).join('\n')})}; // 5개+ → 요약
+// 한 항목 → 구조 판정으로 고른 템플릿에 값 채우기(규칙 모드. AI 모드도 같은 판정 결과를 씀)
+function mapItem(it){
+  const t=it.title||'', b=tidyLines(it.bullets,10), ims=(it.images||[]);
+  const sh=analyzeShape(it); const src=pickTemplate(sh);
+  if(!b.length && !ims.length && !sh.table) return {src:5, values:byField(5,{0:t})};   // 제목만 → 챕터
+  const vals=[t];
+  if(sh.table){ sh.table.forEach(row=>row.forEach(c=>{ if(c) vals.push(c); })); }       // 표는 셀 순서대로
+  else b.forEach(x=>vals.push(x));
+  const inst={src, values:fillOrds(src, vals), images:{}};
+  return ims.length? attachImages(inst, ims) : inst;
 }
 // 업로드 내용 → 표지·목차 포함한 실제 교안 구성
 function buildDeck(items, fileName){
@@ -895,7 +1032,12 @@ function buildCatalog(){
   });
 }
 // AI에 보내는 문서 요약본 — 사진은 '몇 장 있는지'만 보냄(그림 데이터는 전송하지 않음)
-function aiPayload(items, off){ return items.map((it,i)=>({idx:(off||0)+i, title:it.title||'', bullets:(it.bullets||[]).slice(0,30), images:(it.images||[]).length})); }
+function aiPayload(items, off){ return items.map((it,i)=>{
+  const sh=analyzeShape(it);
+  const o={idx:(off||0)+i, title:it.title||'', bullets:(it.bullets||[]).slice(0,30),
+    images:(it.images||[]).length, 구조:sh.kind, use_src:pickTemplate(sh)};
+  if(sh.table) o.table=sh.table.slice(0,10);
+  return o; }); }
 /* 응답이 잘리거나 한 글자 깨져도 전체를 버리지 않는다 —
    통째로 파싱해 보고, 실패하면 중괄호 짝을 세어 '온전한 슬라이드 객체'만 골라 살린다. */
 function parseSlides(txt){
@@ -967,15 +1109,16 @@ function tocSlide(plan){
 // 원본 1장 → 교안 1장 유지 모드
 async function aiConvertKeep(items){
   const sys="당신은 기업 교육 교안(PPT) 설계 전문가입니다. 기존 교육자료를 '새 마스터 템플릿'으로 옮기는 작업을 합니다.\n"
-   +"규칙:\n1) **문서 항목(원본 슬라이드/절) 1개당 슬라이드 1장**이 기본이며, 한 항목이 구조(절차·비교)와 사진을 함께 담고 있으면 그 항목만 2장으로 나눠도 됩니다. 원본 순서는 유지하고 항목을 합치거나 빼지 마세요.\n"
+   +"규칙:\n1) **문서 항목 1개당 슬라이드 정확히 1장.** 원본 순서를 유지하고 항목을 합치거나 빼거나 나누지 마세요.\n"
    +"2) 각 슬라이드에 그 원본 항목 번호 \"idx\"를 반드시 넣으세요.\n"
    +"3) 첫 묶음이면 맨 앞에 표지(id 1~3 중 하나) 1장만 추가하세요(idx는 null). **목차는 만들지 마세요**(도구가 만듭니다).\n"
-   +"4) 사진(images≥1) 있는 항목은 **기본이 id 9(본문+이미지) 한 장**입니다 — 제목·핵심문장·설명을 채우면 사진은 도구가 옆에 배치합니다.\n"
-   +"   절차·비교 항목이 4개 이상으로 뚜렷해서 구조 템플릿이 훨씬 나을 때만 2장으로 나누되 **이 묶음에서 최대 1곳까지만**(원본 장수를 지키는 게 우선). 나눌 때 두 번째 장도 제목·핵심문장·설명을 반드시 채우고, 텍스트가 빈 슬라이드는 절대 만들지 마세요.\n"
-   +"5) 내용 성격에 맞는 템플릿을 고르세요: 절차/단계→14·15·16, 순서 있는 점검항목→11, 비교→17/18, 수치·비율→19~21·12, 한 문장 핵심→13, 3~4개 나열→7·10, 서술 설명→8, 큰 주제 전환→5/6, 마무리→31.\n"
-   +"   **사진이 있어도 내용이 절차·비교·체크리스트라면 그 구조 템플릿을 쓰세요.** 그때는 사진 슬라이드가 바로 뒤에 자동으로 하나 더 생깁니다(한 항목당 최대 2장 허용).\n"
+   +"4) **템플릿은 이미 정해져 있습니다.** 각 항목의 `use_src` 값을 그대로 src에 쓰세요. 바꾸지 마세요.\n"
+   +"   (도구가 원본의 구조 — 번호 매김·표·비교·수치·사진·분량 — 을 분석해 고른 값입니다. 항목의 `구조` 필드가 그 판정 결과입니다.)\n"
+   +"5) 당신이 할 일은 **그 템플릿의 각 칸에 들어갈 문장을 발표용으로 다듬어 채우는 것**입니다. 사진 배치는 도구가 합니다.\n"
+   +"   `table`이 있으면 그 표의 행/열 값을 해당 칸에 그대로 옮기세요(수치·명칭 변경 금지).\n"
    +"6) **이건 발표용 교육자료입니다. 원본 문장을 그대로 옮기지 마세요.** 설명·본문 칸은 반드시 **줄바꿈 문자 \\n 으로 2~4줄로 나눠서** 넣으세요(한 줄에 한 메시지, 45자 이내). 한 칸에 긴 문장을 이어 붙이면 실패로 봅니다. 명사형·개조식으로 다듬고 군더더기(‘~한다’ 반복, 중복 설명)를 걷어내세요.\n"
    +"   단, **검사명·수치·기준값·시약명·장비명·단위는 절대 바꾸거나 빼지 마세요**(교육자료 정확성). 원본에 ※·중요·주의 표시가 붙은 내용은 반드시 살리고 문장 앞에 '※'를 유지하세요.\n"
+   +"   ★원문에 **강조** 와 ==형광== 표시가 붙어 있습니다. 작성자가 중요하다고 표시한 부분이므로 **그 표시를 결과 문장에도 반드시 그대로 남기세요**(문장을 다듬어도 강조된 핵심어는 마커째로 유지). 없던 곳에 새로 붙이지는 마세요.\n"
    +"   작성자 메모·날짜·사번·이름 같은 잡음은 제외하세요. 원본 제목이 없으면 본문을 보고 짧은 소제목을 지어 넣으세요.\n"
    +"7) 차트 템플릿(19~21)을 쓰면 chart:{labels:[...],values:[숫자...]} 포함.\n"
    +"8) **각 칸은 템플릿 목록의 fields[].is(그 칸이 담아야 하는 것)를 지켜 채우세요.** 특히 제목 칸과 핵심 메시지 칸에 같은 말을 두 번 쓰면 안 됩니다 —\n"
@@ -1019,6 +1162,17 @@ async function aiConvertKeep(items){
     pending.forEach(p=>{ const mp=mapItem(p.it); all.push({src:mp.src, idx:p.idx, fields:ordsOf(mp)}); });
   }
   if(!all.length) throw new Error('AI가 구성을 만들지 못했습니다');
+  // 템플릿은 코드가 정한 값으로 확정(AI가 다른 걸 골랐어도 되돌림) + 한 항목에 여러 장이 오면 첫 장만
+  const usedIdx={}, kept=[];
+  all.forEach(s=>{
+    if(s.idx==null){ kept.push(s); return; }
+    const it=items[+s.idx];
+    if(!it || usedIdx[+s.idx]) return;                 // 없는 항목이거나 같은 항목 두 번째 → 버림(1항목 1장)
+    usedIdx[+s.idx]=1;
+    s.src=pickTemplate(analyzeShape(it));
+    kept.push(s);
+  });
+  all.length=0; all.push.apply(all, kept);
   // 응답이 잘려 일부 항목이 빠질 수 있다 → 빠진 항목은 규칙 기반으로 채워 원본 내용을 잃지 않게 하고 원본 순서로 정렬
   const have={}; all.forEach(s=>{ if(s.idx!=null) have[+s.idx]=1; });
   let filled=0;
@@ -1127,11 +1281,35 @@ function blankSet(src, values){
 function stripBracket(t){
   return String(t).replace(/\s*[·•\-–—]\s*\[[^\]]*\]/g,'').replace(/\[[^\]]*\]/g,'').replace(/\s{2,}/g,' ').trim();
 }
-// 줄바꿈이 있는 값 → 같은 서식을 유지한 여러 줄로(a:br). 발표자료는 한 줄에 한 메시지여야 읽힘.
-function multiLineT(lines, rpr){
-  let s='<a:t>'+xesc(lines[0])+'</a:t></a:r>';
-  for(let i=1;i<lines.length;i++){ s+='<a:br>'+rpr+'</a:br><a:r>'+rpr+'<a:t>'+xesc(lines[i])+'</a:t>'+(i<lines.length-1?'</a:r>':''); }
-  return s;
+// 강조 조각용 rPr — 스키마 순서(solidFill → highlight → latin/ea)를 지켜 새로 만든다
+function emphRpr(base, seg){
+  const sz=(String(base).match(/sz="(\d+)"/)||[])[1];
+  const latin=(String(base).match(/<a:latin[^>]*\/>/)||[''])[0];
+  const ea=(String(base).match(/<a:ea[^>]*\/>/)||[''])[0];
+  const baseBold=/\bb="1"/.test(String(base));
+  let a=' lang="ko-KR" dirty="0"';
+  if(sz) a+=' sz="'+sz+'"';
+  a+=' b="'+((seg.bold||baseBold)?1:0)+'"';
+  let inner='';
+  if(seg.bold) inner+='<a:solidFill><a:srgbClr val="C8102E"/></a:solidFill>';   // 보강 글자 = 마스터 레드
+  if(seg.hl)   inner+='<a:highlight><a:srgbClr val="FFF200"/></a:highlight>';   // 형광은 형광으로
+  return '<a:rPr'+a+'>'+inner+latin+ea+'</a:rPr>';
+}
+/* 값 → 실제 런들. 줄바꿈은 a:br, ==형광==·**강조**는 서식이 적용된 별도 런으로.
+   첫 런은 비워두고(원본 rPr가 앞에 이미 있으므로) 조각마다 새 런을 만들어 서식을 각각 지정한다. */
+function runsForValue(v, rpr){
+  const lines=String(v).split(/\r?\n/).map(x=>x.trim()).filter(function(x){return x!=='';});
+  if(!lines.length) return '<a:t></a:t>';
+  let s='<a:t></a:t></a:r>';
+  lines.forEach((ln,li)=>{
+    if(li) s+='<a:br>'+rpr+'</a:br>';
+    const segs=markSegs(ln);
+    (segs.length?segs:[{t:ln,bold:false,hl:false}]).forEach(seg=>{
+      const rp=(seg.bold||seg.hl)? emphRpr(rpr,seg) : rpr;
+      s+='<a:r>'+rp+'<a:t>'+xesc(seg.t)+'</a:t></a:r>';
+    });
+  });
+  return s.replace(/<\/a:r>$/,'');     // 마지막 </a:r>는 원본 런의 닫는 태그가 담당
 }
 function rprBefore(xml, off){ const head=xml.slice(Math.max(0,off-1200), off);
   const m=head.match(/<a:rPr[^>]*\/>|<a:rPr[\s\S]*?<\/a:rPr>/g); return m?m[m.length-1]:'<a:rPr lang="ko-KR" dirty="0"/>'; }
@@ -1148,9 +1326,9 @@ function fillSlide(xml, src, values, pageNo, total, secNo){
       if(!(v&&String(v).trim())) return '<a:t></a:t>';
       // 장번호 배지와 같은 텍스트 상자에 붙어 있으면 한 칸 띄움 ("14.Diff count" → "14. Diff count")
       const pre = (ai>0 && isSecNo(CAT[src].aTexts[ai-1]||'')) ? ' ' : '';
-      const lines=String(v).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-      if(lines.length>1){ lines[0]=pre+lines[0]; return multiLineT(lines, rprBefore(xml,off)); }
-      return '<a:t>'+pre+xesc(v)+'</a:t>'; }
+      const val=(pre? pre:'')+String(v);
+      if(/\n|==|\*\*/.test(val)) return runsForValue(val, rprBefore(xml,off));   // 여러 줄·강조 → 런 분해
+      return '<a:t>'+xesc(val)+'</a:t>'; }
     if(/\[[^\]]*\]/.test(inner) && !isImgHint(inner)) return '<a:t>'+xesc(stripBracket(inner))+'</a:t>';
     return m;
   });
@@ -1219,6 +1397,7 @@ async function genPPT(){
       let xml=fillSlide(origXml[inst.src], inst.src, inst.values, k, M, hasSec?secNo:0);
       xml=fillChart(xml, inst.src, inst.chart);
       xml=dropEmptyImgSlots(xml, inst.src, inst.images);
+      xml=bumpFontsXml(xml);
       let rels=origRels[inst.src] ? origRels[inst.src].replace(/<Relationship\b[^>]*?notesSlide[^>]*?\/>/g,'')
         : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
       // 도넛: 슬라이드마다 값 반영한 링 이미지를 새로 만들어 rel 연결 (여러 도넛이 값 공유하지 않도록)
